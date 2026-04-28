@@ -15,15 +15,15 @@ This project runs three services:
 ## Architecture
 
 ```text
-┌──────────────┐     subscribes     ┌──────────────────┐     reads     ┌──────────────┐
-│   RSS Reader │ ──────────────────>│  Feed Generator   │ ────────────>│  PostgreSQL   │
-│   (TTRSS)    │    RSS/Atom XML    │  (Express HTTP)   │              │               │
+┌──────────────┐     subscribes     ┌──────────────────┐     reads    ┌──────────────┐
+│   RSS Reader │ ──────────────────>│  Feed Generator  │ ────────────>│  PostgreSQL  │
+│   (TTRSS)    │    RSS/Atom XML    │  (Express HTTP)  │              │              │
 └──────────────┘                    └──────────────────┘              └──────────────┘
                                                                             ▲
                                                                             │ writes
                                                                      ┌──────────────┐
-                                                                     │   Scraper     │
-                                                                     │ (cron+jitter) │
+                                                                     │   Scraper    │
+                                                                     │ (cron+jitter)│
                                                                      └──────────────┘
 ```
 

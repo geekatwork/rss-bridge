@@ -1,6 +1,6 @@
 # RSS Bridge: Source Groups to RSS
 
-[![CI](https://github.com/<owner>/rss-bridge/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/<owner>/rss-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/geekatwork/rss-bridge/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/geekatwork/rss-bridge/actions/workflows/ci.yml)
 
 A Docker-based monorepo that scrapes source group content and exposes it as RSS feeds for readers like Tiny Tiny RSS.
 

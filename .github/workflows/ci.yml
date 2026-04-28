@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build tests
+        run: npm run test:build
+
+      - name: Unit tests
+        run: npm run test:unit
+
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare env file
+        run: |
+          SMOKE_DB_PASSWORD="smoke_db_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          cat > .env <<EOF
+          POSTGRES_DB=rss_bridge
+          POSTGRES_USER=rss_bridge
+          POSTGRES_PASSWORD=${SMOKE_DB_PASSWORD}
+          DB_PORT=5433
+          FEED_PORT=3100
+          SCRAPE_GROUPS=[{"groupId":"smoke-group-1","siteId":"example-site","name":"Demo Group One","url":"https://example.com/groups/smoke-group-1"}]
+          SCRAPE_SCHEDULE=0 * * * *
+          EOF
+
+      - name: Create external docker network
+        run: docker network create rss-bridge || true
+
+      - name: Create external docker volume
+        run: docker volume create rss-bridge_pgdata || true
+
+      - name: Smoke tests
+        run: npm run test:smoke
+
+      - name: Teardown
+        if: always()
+        run: docker compose down --remove-orphans

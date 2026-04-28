@@ -1,0 +1,73 @@
+services:
+  db:
+    container_name: rss-bridge-db
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rss_bridge}
+      POSTGRES_USER: ${POSTGRES_USER:-rss_bridge}
+      POSTGRES_PASSWORD:
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rss_bridge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  feed-generator:
+    container_name: rss-bridge-feed-generator
+    build:
+      context: .
+      dockerfile: packages/feed-generator/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FEED_PORT:-3100}:80"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-rss_bridge}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-rss_bridge}
+      PORT: 80
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - default
+      - rss-bridge
+
+  scraper:
+    container_name: rss-bridge-scraper
+    build:
+      context: .
+      dockerfile: packages/scraper/Dockerfile
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-rss_bridge}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-rss_bridge}
+      SCRAPE_GROUPS: ${SCRAPE_GROUPS}
+      SCRAPE_SCHEDULE: ${SCRAPE_SCHEDULE:-0 */2 * * *}
+      SOURCE_ACCESS_TOKEN: ${SOURCE_ACCESS_TOKEN:-}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/appuser/.cache
+    volumes:
+      - ./cookies:/app/cookies:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+    external: true
+    name: rss-bridge_pgdata
+
+networks:
+  rss-bridge:
+    external: true
+  default:

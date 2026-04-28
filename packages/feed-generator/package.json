@@ -1,0 +1,24 @@
+{
+  "name": "feed-generator",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "express": "4.22.1",
+    "feed": "4.2.2",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.19.17",
+    "@types/pg": "^8.20.0",
+    "tsx": "4.21.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.5"
+  }
+}

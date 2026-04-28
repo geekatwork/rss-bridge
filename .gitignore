@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+cookies/**/*.json
+!cookies/facebook/fb_cookies.example.json
+
+# Added by ggshield
+.cache_ggshield

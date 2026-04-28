@@ -1,0 +1,14 @@
+{
+  "name": "rss-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test:build": "bash scripts/test-build.sh",
+    "test:unit": "npm run -w packages/scraper test:unit && npm run -w packages/feed-generator test:unit",
+    "test:smoke": "bash scripts/test-smoke.sh",
+    "test:all": "npm run test:build && npm run test:unit && npm run test:smoke"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}

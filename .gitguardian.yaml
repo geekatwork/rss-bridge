@@ -1,0 +1,5 @@
+secret:
+  ignored_matches:
+  - match: 62a8b68fea0fcfaff5acf261e1f527e662c09566a22fe4a2a7d7ef5585e2b6fb
+    name: Generic Password - /home/richard/rss-bridge/.github/workflows/ci.yml
+version: 2

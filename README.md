@@ -21,10 +21,10 @@ This project runs three services:
 └──────────────┘                    └──────────────────┘              └──────────────┘
                                                                             ▲
                                                                             │ writes
-                                                                     ┌──────────────┐
-                                                                     │   Scraper    │
-                                                                     │ (cron+jitter)│
-                                                                     └──────────────┘
+                                                                      ┌──────────────┐
+                                                                      │   Scraper    │
+                                                                      │ (cron+jitter)│
+                                                                      └──────────────┘
 ```
 
 ## Repository Layout

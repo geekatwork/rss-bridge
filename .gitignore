@@ -5,6 +5,7 @@ dist/
 cookies/**/*.json
 !cookies/facebook/fb_cookies.example.json
 .vscode/*
+TODO.md
 
 # Added by ggshield
 .cache_ggshield

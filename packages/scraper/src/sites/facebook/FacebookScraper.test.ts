@@ -67,6 +67,8 @@ describe("FacebookScraper API mode", () => {
     expect(items[0].sourceId).toBe("post_1");
     expect(items[0].sourceSite).toBe("facebook");
     expect(items[0].authorName).toBe("Author");
+    // Title must not include author name (should be null)
+    expect(items[0].title).toBeNull();
   });
 
   it("fetchListing throws if groupIds are missing", async () => {

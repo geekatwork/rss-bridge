@@ -412,10 +412,11 @@ export class FacebookScraper extends SiteScraper {
     return rawPosts.map((post): NormalizedItem => {
       const postedAt = post.time ? (parseTimestamp(post.time) || new Date()) : new Date();
 
+      // Ensure title never includes author name (requirement: title must not contain author)
       return {
         sourceId: post.id,
         sourceSite: this.config.siteId,
-        title: null,
+        title: null, // Do not include author name in title
         contentText: post.text || null,
         contentHtml: textToParagraphHtml(post.text || null),
         authorName: post.author,
@@ -612,10 +613,11 @@ export class FacebookScraper extends SiteScraper {
   }
 
   private postToItem(post: NormalizedPost): NormalizedItem {
+    // Ensure title never includes author name (requirement: title must not contain author)
     return {
       sourceId: post.sourcePostId,
       sourceSite: this.config.siteId,
-      title: null,
+      title: null, // Do not include author name in title
       contentText: post.contentText,
       contentHtml: post.contentHtml,
       authorName: post.authorName,

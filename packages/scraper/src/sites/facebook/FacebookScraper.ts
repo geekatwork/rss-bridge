@@ -372,12 +372,22 @@ export class FacebookScraper extends SiteScraper {
           if (/^(like|share|comment|\d+\s*reacted|see more|all-star|more options|tap to|unseen|loading|write a|public comment|most relevant|sort)/i.test(t)) continue;
           if (namesToStrip.has(t)) continue;
           if (/^[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFF}\s]+$/u.test(t)) continue;
+          // Remove leading author name and colon
           for (const name of namesToStrip) {
-            if (t.startsWith(name)) {
+            if (t.startsWith(name + ":")) {
+              t = t.substring((name + ":").length).trim();
+            } else if (t.startsWith(name)) {
               t = t.substring(name.length).trim();
             }
           }
-          t = t.replace(/^[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFF}\s]+/u, "").trim();
+          // Remove leading role labels like 'Admin', 'Moderator', etc.
+          t = t.replace(/^(Admin|Moderator|Author|Top Fan|Group Expert|Page)\b:?\s*/i, "");
+          // Remove leading timestamp and special unicode (e.g., "49m", "2h", etc. with icons)
+          t = t.replace(/^([0-9]{1,2}\s*[hmwd]|yesterday|just now)[^\p{L}\p{N}]+/iu, "");
+          // Remove any remaining leading/trailing special unicode symbols
+          t = t.replace(/^[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFF}\s]+/u, "").replace(/[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFF}\s]+$/u, "").trim();
+          // Collapse multiple spaces/newlines at the start
+          t = t.replace(/^[ \t\n\r]+/, "");
           t = t.replace(/\.{3}\s*See more\s*$/i, "...").replace(/\s*See more\s*$/i, "").trim();
           seenTexts.add(t);
           if (t.length > 10) {

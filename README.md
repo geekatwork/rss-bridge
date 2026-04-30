@@ -133,29 +133,21 @@ Notes:
 - Feed generator architecture and operations:
   - `packages/feed-generator/README.md`
 
-## GitHub Publish Checklist
+## Redeploying to Docker
 
-1. Pre-publish hygiene:
-   - Confirm `.env` is ignored and contains no real secrets in history.
-   - Confirm cookie JSON files are ignored and not committed.
-   - Replace any real credentials in docs with placeholders.
+To apply code or dependency changes to your Docker container:
 
-2. Initialize and commit:
-
-   ```bash
-   git init
-   git branch -M main
-   git add .
-   git commit -m "Initial commit: rss bridge stack"
+1. Rebuild the Docker image:
+   ```sh
+   docker-compose build
+   ```
+2. Restart the container with the new image:
+   ```sh
+   docker-compose up -d
    ```
 
-3. Add remote and push:
-
-   ```bash
-   git remote add origin git@github.com:<you>/rss-bridge.git
-   git push -u origin main
+This ensures your latest changes are reflected in the running service. For a specific service, use:
+   ```sh
+   docker-compose build <service_name>
+   docker-compose up -d <service_name>
    ```
-
-4. Optional but recommended before first release:
-   - Add LICENSE, CONTRIBUTING.md, SECURITY.md.
-   - Add CI build workflow for both packages.

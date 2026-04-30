@@ -1,6 +1,10 @@
+
+// --- IMPORTS ---
 import axios from "axios";
 import type { NormalizedPost } from "../../types.js";
 
+
+// --- CONSTANTS & INTERFACES ---
 const GRAPH_API_BASE = process.env.SOURCE_GRAPH_API_BASE || "https://graph.facebook.com/v19.0";
 
 interface GraphApiPost {
@@ -20,14 +24,7 @@ interface GraphApiPost {
   };
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
+// --- MAIN EXPORTS ---
 export async function fetchPostsViaApi(
   groupId: string,
   accessToken: string,
@@ -74,3 +71,12 @@ export async function fetchPostsViaApi(
 
 // Backward-compatible alias
 export const fetchGroupPostsViaApi = fetchPostsViaApi;
+
+// --- HELPER FUNCTIONS ---
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}

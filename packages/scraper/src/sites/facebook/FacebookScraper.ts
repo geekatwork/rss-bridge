@@ -1,9 +1,106 @@
+// --- IMPORTS ---
 import { readFileSync, existsSync } from "fs";
 import type { Page } from "puppeteer";
 import { SiteScraper, type NormalizedItem, type ScraperContext, type SiteConfig } from "../../core/index.js";
 import { parseTimestamp, sleep, textToParagraphHtml } from "../../core/utils.js";
 import { fetchPostsViaApi } from "./graphApi.js";
 import type { NormalizedPost } from "../../types.js";
+
+// --- MAIN EXPORTS ---
+export function cleanFacebookPostText(raw: string, author?: string): string {
+  let lines = raw.split(/\r?\n/);
+  const namesToStrip: string[] = [];
+  if (author) namesToStrip.push(author);
+
+  // Remove metadata/timestamp/unicode from all lines, then skip lines that are empty after cleaning
+  // Regex for invisible unicode and special chars
+  const invisibleOrSpecial = /[\u200e\u200f\u202a-\u202e\u2066-\u2069󰞋󱙷\uE000\uF8FF]/gu;
+  const timestampOnly = /^([0-9]{1,2}\s*[hmwd]|yesterday|just now)[^\p{L}\p{N}]*\s*$/iu;
+  lines = lines
+    .map((line) => {
+      let cleaned = stripMetadata(line.trim(), namesToStrip);
+      cleaned = stripTimestamps(cleaned);
+      cleaned = removeSpecialUnicode(cleaned);
+      return cleaned;
+    })
+    .filter((line) => {
+      if (line === "") return false;
+      // Remove invisible/special chars for timestamp check
+      const stripped = line.replace(invisibleOrSpecial, "").trim();
+      if (timestampOnly.test(stripped)) return false;
+      // skip if only special unicode (after trimming)
+      if (/^[󰞋󱙷\uE000\uF8FF]+$/u.test(line)) return false;
+      return true;
+    });
+  if (lines.length === 0) return "";
+  let t = lines.join("\n");
+  // Use removeSpecialUnicode on the whole text
+  t = removeSpecialUnicode(t).trim();
+  t = t.replace(/^[ \t\n\r]+/, "");
+  t = t
+    .replace(/\.{3}\s*See more\s*$/i, "...")
+    .replace(/\s*See more\s*$/i, "")
+    .trim();
+  return t;
+}
+
+// --- MAIN CLASS ---
+
+interface CookieEntry {
+  name: string;
+  value: string;
+  domain: string;
+  path?: string;
+  httpOnly?: boolean;
+  secure?: boolean;
+}
+
+// Robust post text cleaning logic (shared with tests)
+// --- HELPER FUNCTIONS ---
+function stripMetadata(line: string, namesToStrip: string[]): string {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const name of namesToStrip) {
+      if (line.startsWith(name + ":")) {
+        line = line.substring((name + ":").length).trim();
+        changed = true;
+      } else if (line.startsWith(name)) {
+        line = line.substring(name.length).trim();
+        changed = true;
+      }
+    }
+    const adminMatch =
+      /^(Admin|Moderator|Author|Top Fan|Group Expert|Page)\b:?/i;
+    if (adminMatch.test(line)) {
+      line = line.replace(adminMatch, "").trim();
+      changed = true;
+    }
+  }
+  return line;
+}
+
+function stripTimestamps(line: string): string {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const timestampMatch =
+      /^([0-9]{1,2}\s*[hmwd]|yesterday|just now)[^\p{L}\p{N}]*\s*/iu;
+    if (timestampMatch.test(line)) {
+      line = line.replace(timestampMatch, "").trim();
+      changed = true;
+    }
+  }
+  return line;
+}
+
+function removeSpecialUnicode(line: string): string {
+  // Trim only the specific unicode characters from the start and end
+  // Includes: 󰞋 (U+F049B), 󱙷 (U+F8677),  (U+F8FF),  (U+E000)
+  return line.replace(/^[󰞋󱙷\uE000\uF8FF]+|[󰞋󱙷\uE000\uF8FF]+$/gu, "").trim();
+}
+
+
 
 interface CookieEntry {
   name: string;
@@ -194,56 +291,6 @@ export class FacebookScraper extends SiteScraper {
       throw new Error(`Refusing to extract from non-group page: ${currentUrl}`);
     }
 
-    // Scroll to load more posts
-    const scrollLimit = (this.config.options.scrollAttempts as number) || 10;
-    let prevPostCount = 0;
-    let stableCount = 0;
-
-    for (let i = 0; i < scrollLimit; i++) {
-      await this.page.mouse.move(200, 400);
-      await this.page.mouse.wheel({ deltaY: 2000 });
-      await sleep(2500);
-
-      const postCount = await this.page.evaluate(() => {
-        const screenRoot = document.getElementById("screen-root");
-        if (!screenRoot) return 0;
-        const mainDiv = screenRoot.children[0];
-        if (!mainDiv) return 0;
-        let scrollDiv: Element | null = null;
-        for (let j = 0; j < mainDiv.children.length; j++) {
-          const child = mainDiv.children[j];
-          if ((child.textContent || "").trim().length > 200) {
-            scrollDiv = child;
-            break;
-          }
-        }
-        if (!scrollDiv) return 0;
-        let count = 0;
-        for (const c of Array.from(scrollDiv.children)) {
-          const txt = (c.textContent || "").trim();
-          if (txt.length > 30 && /\d+\s*[hmdw]\b|\d+\s*hr|\d+\s*min|\d+\s*day|\d+\s*week|yesterday|just now/i.test(txt)) {
-            count++;
-          }
-        }
-        return count;
-      });
-
-      context.logger.debug({ scroll: i + 1, postsVisible: postCount }, "Scrolling");
-
-      if (postCount === prevPostCount) {
-        stableCount++;
-        if (stableCount >= 2) {
-          this.morePages = false;
-          context.logger.info({ scroll: i + 1 }, "No new posts; stopping scroll");
-          break;
-        }
-      } else {
-        stableCount = 0;
-      }
-      prevPostCount = postCount;
-      this.scrollAttempts++;
-    }
-
     // Extract posts from DOM
     const rawPosts = await this.page.evaluate((groupId: string) => {
       const results: Array<{
@@ -360,51 +407,16 @@ export class FacebookScraper extends SiteScraper {
         }
 
         // Content text
-        let contentText = "";
-        const textAreas = child.querySelectorAll("[data-mcomponent='TextArea'], [data-mcomponent='ServerTextArea']");
-        const seenTexts = new Set<string>();
-        const namesToStrip = new Set<string>();
-        if (author) namesToStrip.add(author);
-
-        for (const ta of Array.from(textAreas)) {
-          let t = ta.textContent?.trim() || "";
-          if (t.length < 5 || seenTexts.has(t)) continue;
-          if (/^(like|share|comment|\d+\s*reacted|see more|all-star|more options|tap to|unseen|loading|write a|public comment|most relevant|sort)/i.test(t)) continue;
-          if (namesToStrip.has(t)) continue;
-          if (/^[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFF}\s]+$/u.test(t)) continue;
-          // Remove leading author name and colon
-          for (const name of namesToStrip) {
-            if (t.startsWith(name + ":")) {
-              t = t.substring((name + ":").length).trim();
-            } else if (t.startsWith(name)) {
-              t = t.substring(name.length).trim();
-            }
-          }
-          // Remove leading role labels like 'Admin', 'Moderator', etc.
-          t = t.replace(/^(Admin|Moderator|Author|Top Fan|Group Expert|Page)\b:?\s*/i, "");
-          // Remove leading timestamp and special unicode (e.g., "49m", "2h", etc. with icons)
-          t = t.replace(/^([0-9]{1,2}\s*[hmwd]|yesterday|just now)[^\p{L}\p{N}]+/iu, "");
-          // Remove any remaining leading/trailing special unicode symbols
-          t = t.replace(/^[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFF}\s]+/u, "").replace(/[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFF}\s]+$/u, "").trim();
-          // Collapse multiple spaces/newlines at the start
-          t = t.replace(/^[ \t\n\r]+/, "");
-          t = t.replace(/\.{3}\s*See more\s*$/i, "...").replace(/\s*See more\s*$/i, "").trim();
-          seenTexts.add(t);
-          if (t.length > 10) {
-            contentText += (contentText ? "\n" : "") + t;
-          }
-        }
-
-        if (contentText.length > 3000) contentText = contentText.substring(0, 3000);
+        let contentText = fullText;
 
         // Images
         const images: string[] = [];
         child.querySelectorAll("img[src*='fbcdn'], img[src*='scontent']").forEach((img) => {
-          const src = img.getAttribute("src");
-          if (src && !src.includes("emoji") && !src.includes("rsrc.php")) {
-            images.push(src);
-          }
-        });
+            const src = img.getAttribute("src");
+            if (src && !src.includes("emoji") && !src.includes("rsrc.php")) {
+              images.push(src);
+            }
+          });
 
         const html = contentText ? `<p>${contentText.replace(/\n/g, "</p><p>")}</p>` : "";
         const id = `fb_${postId}`;

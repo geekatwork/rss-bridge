@@ -1,12 +1,17 @@
+
+// --- IMPORTS ---
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FacebookScraper } from "./FacebookScraper.js";
+import { cleanFacebookPostText } from "./FacebookScraper.js";
 import { fetchPostsViaApi } from "./graphApi.js";
 import type { ScraperContext, SiteConfig } from "../../core/types.js";
 
+// --- MOCKS ---
 vi.mock("./graphApi.js", () => ({
   fetchPostsViaApi: vi.fn(),
 }));
 
+// --- HELPER FUNCTIONS ---
 function makeContext(): ScraperContext {
   const loggerStub = {
     info: () => undefined,
@@ -84,5 +89,28 @@ describe("FacebookScraper API mode", () => {
 
     await scraper.init(context);
     await expect(scraper.fetchListing(context)).rejects.toThrow("No groupIds provided in config.options");
+  });
+});
+
+describe("Facebook post content cleaning logic", () => {
+  it("removes author, admin, timestamp, and special unicode", () => {
+    const raw = "Aaron Terrence William Wells: Admin                    ‎‎3h‎󰞋‎󱙷‎\nGIVEAWAY TIME 💝...";
+    const cleaned = cleanFacebookPostText(raw, "Aaron Terrence William Wells");
+    expect(cleaned).toBe("GIVEAWAY TIME 💝...");
+  });
+  it("removes only author and timestamp if no admin", () => {
+    const raw = "Tania Elson: 49m\nCollection only Palmerston North residents";
+    const cleaned = cleanFacebookPostText(raw, "Tania Elson");
+    expect(cleaned).toBe("Collection only Palmerston North residents");
+  });
+  it("removes only timestamp if no author", () => {
+    const raw = "9h\nSome post content";
+    const cleaned = cleanFacebookPostText(raw);
+    expect(cleaned).toBe("Some post content");
+  });
+  it("removes special unicode from start/end", () => {
+    const raw = "\uE000\uF8FFGIVEAWAY\uF8FF\uE000";
+    const cleaned = cleanFacebookPostText(raw);
+    expect(cleaned).toBe("GIVEAWAY");
   });
 });

@@ -406,8 +406,8 @@ export class FacebookScraper extends SiteScraper {
           postId = `hash_${Math.abs(hash)}`;
         }
 
-        // Content text (cleaned)
-        let contentText = cleanFacebookPostText(fullText, author || undefined);
+        // Content text (raw in page context; cleaned in Node context)
+        let contentText = fullText;
 
         // Images
         const images: string[] = [];
@@ -432,14 +432,15 @@ export class FacebookScraper extends SiteScraper {
     context.logger.info({ groupId: this.groupId, count: rawPosts.length }, "Extracted posts");
 
     return rawPosts.map((post): NormalizedItem => {
+      const cleanedText = cleanFacebookPostText(post.text || "", post.author || undefined);
       const postedAt = post.time ? (parseTimestamp(post.time) || new Date()) : new Date();
 
       return {
         sourceId: post.id,
         sourceSite: this.config.siteId,
         title: null,
-        contentText: post.text || null,
-        contentHtml: textToParagraphHtml(post.text || null),
+        contentText: cleanedText || null,
+        contentHtml: textToParagraphHtml(cleanedText || null),
         authorName: post.author,
         link: post.link,
         mediaUrls: post.images,

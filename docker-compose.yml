@@ -62,10 +62,29 @@ services:
       db:
         condition: service_healthy
 
+  pgadmin:
+    container_name: rss-bridge-pgadmin
+    image: dpage/pgadmin4:latest
+    restart: unless-stopped
+    profiles:
+      - tools
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
     external: true
     name: rss-bridge_pgdata
+  pgadmin-data:
 
 networks:
   rss-bridge:

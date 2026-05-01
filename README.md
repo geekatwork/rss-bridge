@@ -6,11 +6,15 @@ A Docker-based monorepo that scrapes source group content and exposes it as RSS 
 
 ## What Runs
 
-This project runs three services:
+This project runs three core services:
 
 - PostgreSQL: stores normalized groups and posts.
 - Scraper: plugin-based extraction on a schedule (with jitter).
 - Feed Generator: serves RSS from stored posts.
+
+Optional tooling:
+
+- pgAdmin: browser UI for inspecting the PostgreSQL database.
 
 ## Architecture
 
@@ -72,6 +76,23 @@ Schema uses source-generic identifiers:
    curl http://localhost:3100/feed/<groupId>
    docker compose logs scraper --tail=100
    ```
+
+4. Optional: start pgAdmin for database inspection:
+
+   ```bash
+   docker compose --profile tools up -d pgadmin
+   ```
+
+   Then open `http://localhost:5050` and sign in with:
+   - email: `admin@example.com` or `PGADMIN_DEFAULT_EMAIL`
+   - password: `admin` or `PGADMIN_DEFAULT_PASSWORD`
+
+   Add a server in pgAdmin with:
+   - host: `db`
+   - port: `5432`
+   - database: `rss_bridge` unless overridden by `POSTGRES_DB`
+   - username: `rss_bridge` unless overridden by `POSTGRES_USER`
+   - password: `POSTGRES_PASSWORD`
 
 ## SCRAPE_GROUPS Format
 
@@ -151,3 +172,37 @@ This ensures your latest changes are reflected in the running service. For a spe
    docker-compose build <service_name>
    docker-compose up -d <service_name>
    ```
+
+## pgAdmin
+
+pgAdmin is available as an optional Compose service under the `tools` profile.
+
+Start it:
+
+```bash
+docker compose --profile tools up -d pgadmin
+```
+
+Stop it:
+
+```bash
+docker compose --profile tools stop pgadmin
+```
+
+Remove it:
+
+```bash
+docker compose --profile tools rm -f pgadmin
+```
+
+Default access:
+
+- URL: `http://localhost:5050`
+- Email: `admin@example.com`
+- Password: `admin`
+
+Environment overrides:
+
+- `PGADMIN_PORT`
+- `PGADMIN_DEFAULT_EMAIL`
+- `PGADMIN_DEFAULT_PASSWORD`

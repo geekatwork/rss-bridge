@@ -299,6 +299,58 @@ export class FacebookScraper extends SiteScraper {
       throw new Error(`Refusing to extract from non-group page: ${currentUrl}`);
     }
 
+    const scrollLimit = (this.config.options.scrollAttempts as number) || 10;
+    let prevPostCount = 0;
+    let stableCount = 0;
+
+    // Load additional posts before extraction.
+    for (let i = 0; i < scrollLimit; i++) {
+      await this.page.mouse.move(200, 400);
+      await this.page.mouse.wheel({ deltaY: 2000 });
+      await sleep(2500);
+
+      const postCount = await this.page.evaluate(() => {
+        const screenRoot = document.getElementById("screen-root");
+        if (!screenRoot) return 0;
+        const mainDiv = screenRoot.children[0];
+        if (!mainDiv) return 0;
+        let scrollDiv: Element | null = null;
+        for (let j = 0; j < mainDiv.children.length; j++) {
+          const child = mainDiv.children[j];
+          if ((child.textContent || "").trim().length > 200) {
+            scrollDiv = child;
+            break;
+          }
+        }
+        if (!scrollDiv) return 0;
+
+        let count = 0;
+        for (const c of Array.from(scrollDiv.children)) {
+          const txt = (c.textContent || "").trim();
+          if (txt.length < 30) continue;
+          if (/\d+\s*[hmdw]\b|\d+\s*hr|\d+\s*min|\d+\s*day|\d+\s*week|yesterday|just now/i.test(txt)) {
+            count++;
+          }
+        }
+        return count;
+      });
+
+      context.logger.debug({ scroll: i + 1, postsVisible: postCount }, "Scrolling Facebook feed");
+
+      if (postCount === prevPostCount) {
+        stableCount++;
+        if (stableCount >= 2) {
+          context.logger.info({ scroll: i + 1 }, "No additional posts loaded; stopping scroll");
+          break;
+        }
+      } else {
+        stableCount = 0;
+      }
+
+      prevPostCount = postCount;
+      this.scrollAttempts++;
+    }
+
     // Extract posts from DOM
     const rawPosts = await this.page.evaluate((groupId: string) => {
       const results: Array<{

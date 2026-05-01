@@ -328,9 +328,7 @@ export class FacebookScraper extends SiteScraper {
         for (const c of Array.from(scrollDiv.children)) {
           const txt = (c.textContent || "").trim();
           if (txt.length < 30) continue;
-          if (/\d+\s*[hmdw]\b|\d+\s*hr|\d+\s*min|\d+\s*day|\d+\s*week|yesterday|just now/i.test(txt)) {
-            count++;
-          }
+          count++;
         }
         return count;
       });
@@ -387,7 +385,6 @@ export class FacebookScraper extends SiteScraper {
 
         const fullText = (child.textContent || "").trim();
         if (fullText.length < 30) continue;
-        if (!/\d+\s*[hmdw]\b|\d+\s*hr|\d+\s*min|\d+\s*day|\d+\s*week|yesterday|just now/i.test(fullText)) continue;
 
         // Author
         const storyLabels = child.querySelectorAll("[aria-label^='Unseen story from']");
@@ -491,11 +488,21 @@ export class FacebookScraper extends SiteScraper {
 
     context.logger.info({ groupId: this.groupId, count: rawPosts.length }, "Extracted posts");
 
-    const boundedRawPosts = stopAtSourceId
-      ? rawPosts.slice(0, rawPosts.findIndex((post) => post.id === stopAtSourceId) >= 0
-          ? rawPosts.findIndex((post) => post.id === stopAtSourceId)
-          : rawPosts.length)
-      : rawPosts;
+    const markerIndex = stopAtSourceId
+      ? rawPosts.findIndex((post) => post.id === stopAtSourceId)
+      : -1;
+    const boundedRawPosts = markerIndex >= 0 ? rawPosts.slice(0, markerIndex) : rawPosts;
+
+    context.logger.info(
+      {
+        groupId: this.groupId,
+        rawCount: rawPosts.length,
+        boundedCount: boundedRawPosts.length,
+        stopAtSourceId: stopAtSourceId || null,
+        markerFound: markerIndex >= 0,
+      },
+      "Facebook extraction boundary stats"
+    );
 
     return boundedRawPosts.map((post): NormalizedItem => {
       const cleanedText = cleanFacebookPostText(post.text || "", post.author || undefined);

@@ -406,8 +406,8 @@ export class FacebookScraper extends SiteScraper {
           postId = `hash_${Math.abs(hash)}`;
         }
 
-        // Content text
-        let contentText = fullText;
+        // Content text (cleaned)
+        let contentText = cleanFacebookPostText(fullText, author || undefined);
 
         // Images
         const images: string[] = [];

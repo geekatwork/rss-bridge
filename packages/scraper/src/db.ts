@@ -86,3 +86,22 @@ export async function upsertItems(
   }
   return upserted;
 }
+
+/**
+ * Returns the most recently scraped source post id for a group.
+ * Used as a boundary marker so site scrapers can stop when they reach
+ * content that has already been persisted.
+ */
+export async function getLatestScrapedSourcePostId(
+  groupId: number
+): Promise<string | null> {
+  const result = await pool.query(
+    `SELECT source_post_id
+     FROM posts
+     WHERE group_id = $1
+     ORDER BY scraped_at DESC, id DESC
+     LIMIT 1`,
+    [groupId]
+  );
+  return result.rows[0]?.source_post_id ?? null;
+}

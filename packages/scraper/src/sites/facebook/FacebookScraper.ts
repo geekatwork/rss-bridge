@@ -219,6 +219,7 @@ export class FacebookScraper extends SiteScraper {
 
   async fetchListing(context: ScraperContext): Promise<void> {
     const groupIds = this.config.options.groupIds as string[];
+    const stopAtSourceId = this.config.options.stopAtSourceId as string | undefined;
     if (!groupIds || groupIds.length === 0) {
       throw new Error("No groupIds provided in config.options");
     }
@@ -229,7 +230,13 @@ export class FacebookScraper extends SiteScraper {
       const accessToken = this.config.options.accessToken as string;
       context.logger.info({ groupId: this.groupId }, "Fetching via Graph API");
       const posts = await fetchPostsViaApi(this.groupId, accessToken);
-      this.apiItems = posts.map((p) => this.postToItem(p));
+      const mapped = posts.map((p) => this.postToItem(p));
+      if (stopAtSourceId) {
+        const markerIndex = mapped.findIndex((item) => item.sourceId === stopAtSourceId);
+        this.apiItems = markerIndex >= 0 ? mapped.slice(0, markerIndex) : mapped;
+      } else {
+        this.apiItems = mapped;
+      }
       context.logger.info({ groupId: this.groupId, count: this.apiItems.length }, "Graph API returned items");
       return;
     }
@@ -280,6 +287,7 @@ export class FacebookScraper extends SiteScraper {
 
   async extractItems(context: ScraperContext): Promise<NormalizedItem[]> {
     if (!this.groupId) throw new Error("Group ID not set");
+    const stopAtSourceId = this.config.options.stopAtSourceId as string | undefined;
 
     if (this.useApi) {
       return this.apiItems;
@@ -431,7 +439,13 @@ export class FacebookScraper extends SiteScraper {
 
     context.logger.info({ groupId: this.groupId, count: rawPosts.length }, "Extracted posts");
 
-    return rawPosts.map((post): NormalizedItem => {
+    const boundedRawPosts = stopAtSourceId
+      ? rawPosts.slice(0, rawPosts.findIndex((post) => post.id === stopAtSourceId) >= 0
+          ? rawPosts.findIndex((post) => post.id === stopAtSourceId)
+          : rawPosts.length)
+      : rawPosts;
+
+    return boundedRawPosts.map((post): NormalizedItem => {
       const cleanedText = cleanFacebookPostText(post.text || "", post.author || undefined);
       const postedAt = post.time ? (parseTimestamp(post.time) || new Date()) : new Date();
 

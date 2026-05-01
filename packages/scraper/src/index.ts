@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { ScrapeEngine } from "./ScrapeEngine.js";
-import { ensureGroup, upsertItems } from "./db.js";
+import { ensureGroup, getLatestScrapedSourcePostId, upsertItems } from "./db.js";
 import type { GroupConfig } from "./types.js";
 
 interface GroupConfigInput {
@@ -56,6 +56,7 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
   console.log(`[${new Date().toISOString()}] Scraping group: ${config.name} (${config.groupId}) via ${siteId}`);
 
   const groupId = await ensureGroup(config);
+  const stopAtSourceId = await getLatestScrapedSourcePostId(groupId);
 
   const engine = new ScrapeEngine();
   await engine.init();
@@ -67,6 +68,7 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
       groupIds: [config.groupId],
       cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
       accessToken: process.env.SOURCE_ACCESS_TOKEN || undefined,
+      stopAtSourceId,
     },
   });
 

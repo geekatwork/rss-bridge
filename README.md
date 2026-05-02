@@ -146,6 +146,51 @@ Notes:
 - Feed channel `link`/`id` intentionally points to the feed URL itself.
 - Items with landing/root-like links are filtered out.
 
+## TT-RSS Docker Networking
+
+If TT-RSS runs in Docker and subscribes to `http://feed-generator/feed/<groupId>`,
+the TT-RSS containers must share a Docker network with this project.
+
+Without the shared network, `feed-generator` may resolve in one TT-RSS container
+but fail in another (for example, web UI checks can fail with DNS errors).
+
+Add the external `rss-bridge` network to TT-RSS services in your TT-RSS
+`docker-compose.yml`:
+
+```yaml
+services:
+   app:
+      networks:
+         - ttrss_default
+         - rss-bridge
+
+   updater:
+      networks:
+         - ttrss_default
+         - rss-bridge
+
+   web-nginx:
+      networks:
+         - ttrss_default
+         - rss-bridge
+
+networks:
+   ttrss_default:
+      external: true
+   rss-bridge:
+      external: true
+```
+
+Then recreate TT-RSS services:
+
+```bash
+docker compose up -d --force-recreate app updater web-nginx
+```
+
+After that, TT-RSS can use feed URLs like:
+
+- `http://feed-generator/feed/1818585508476102`
+
 ## Package Docs
 
 - Scraper architecture and extension guide:

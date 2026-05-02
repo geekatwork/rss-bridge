@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   scheduleMock,
   ensureGroupMock,
+  getLatestScrapedSourcePostIdMock,
   upsertItemsMock,
   engineInitMock,
   engineRegisterSiteMock,
@@ -11,6 +12,7 @@ const {
 } = vi.hoisted(() => ({
   scheduleMock: vi.fn(),
   ensureGroupMock: vi.fn(),
+  getLatestScrapedSourcePostIdMock: vi.fn(),
   upsertItemsMock: vi.fn(),
   engineInitMock: vi.fn(),
   engineRegisterSiteMock: vi.fn(),
@@ -26,6 +28,7 @@ vi.mock("node-cron", () => ({
 
 vi.mock("./db.js", () => ({
   ensureGroup: ensureGroupMock,
+  getLatestScrapedSourcePostId: getLatestScrapedSourcePostIdMock,
   upsertItems: upsertItemsMock,
 }));
 
@@ -65,6 +68,7 @@ describe("scraper index startup", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     ensureGroupMock.mockResolvedValue(101);
+    getLatestScrapedSourcePostIdMock.mockResolvedValue(null);
     engineInitMock.mockResolvedValue(undefined);
     engineRegisterSiteMock.mockReturnValue(undefined);
     engineScrapeOneMock.mockResolvedValue({

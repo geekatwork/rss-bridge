@@ -53,6 +53,9 @@ interface CookieEntry {
   path?: string;
   httpOnly?: boolean;
   secure?: boolean;
+  sameSite?: string;
+  expires?: number;
+  expirationDate?: number;
 }
 
 // Robust post text cleaning logic (shared with tests)
@@ -101,16 +104,6 @@ function removeSpecialUnicode(line: string): string {
 }
 
 
-
-interface CookieEntry {
-  name: string;
-  value: string;
-  domain: string;
-  path?: string;
-  httpOnly?: boolean;
-  secure?: boolean;
-}
-
 /**
  * FacebookScraper: Scrapes public Facebook groups and resolves Instagram links.
  *
@@ -136,7 +129,7 @@ export class FacebookScraper extends SiteScraper {
   private apiItems: NormalizedItem[] = [];
 
   private buildGroupUrl(groupId: string): string {
-    return `https://www.facebook.com/groups/${groupId}/?sorting_setting=RECENT_ACTIVITY`;
+    return `https://www.facebook.com/groups/${groupId}/?sorting_setting=CHRONOLOGICAL`;
   }
 
   private isExpectedGroupPage(url: string, groupId: string): boolean {
@@ -181,12 +174,12 @@ export class FacebookScraper extends SiteScraper {
 
     this.page = await context.browser.newPage();
 
-    // Mobile viewport to match Facebook's detection
+    // Mobile viewport — mobile Facebook renders reliably in headless; desktop does not
     await this.page.setViewport({ width: 412, height: 915 });
 
     // Mobile user agent
     await this.page.setUserAgent(
-      "Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36"
+      "Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile9.144 Mobile Safari/537.36"
     );
 
     // Disable webdriver detection
@@ -205,7 +198,29 @@ export class FacebookScraper extends SiteScraper {
       try {
         const raw = readFileSync(cookiePath, "utf-8");
         const cookies: CookieEntry[] = JSON.parse(raw);
-        await this.page.setCookie(...cookies);
+        const sameSiteMap: Record<string, "None" | "Lax" | "Strict"> = {
+          no_restriction: "None",
+          lax: "Lax",
+          strict: "Strict",
+          unspecified: "None",
+        };
+        const normalizedCookies = cookies.map((c) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          httpOnly: c.httpOnly,
+          secure: c.secure,
+          ...(c.sameSite
+            ? { sameSite: sameSiteMap[c.sameSite.toLowerCase()] ?? "None" }
+            : {}),
+          ...(c.expirationDate != null
+            ? { expires: Math.floor(c.expirationDate) }
+            : c.expires != null
+              ? { expires: c.expires }
+              : {}),
+        }));
+        await this.page.setCookie(...normalizedCookies);
         context.logger.info({ count: cookies.length, cookiePath }, "Loaded Facebook cookies");
       } catch (e) {
         context.logger.warn({ error: String(e) }, "Failed to load cookies");
@@ -299,192 +314,249 @@ export class FacebookScraper extends SiteScraper {
       throw new Error(`Refusing to extract from non-group page: ${currentUrl}`);
     }
 
-    const scrollLimit = (this.config.options.scrollAttempts as number) || 10;
-    let prevPostCount = 0;
+    const scrollLimit = (this.config.options.scrollAttempts as number) || 30;
+    const maxCollected = (this.config.options.maxCollectedPosts as number) || 60;
     let stableCount = 0;
+    let prevCollectedCount = 0;
 
-    // Load additional posts before extraction.
-    for (let i = 0; i < scrollLimit; i++) {
-      await this.page.mouse.move(200, 400);
-      await this.page.mouse.wheel({ deltaY: 2000 });
-      await sleep(2500);
+    const collectVisiblePosts = async () => {
+      return await this.page!.evaluate((groupId: string) => {
+        const results: Array<{
+          index: number;
+          id: string;
+          author: string | null;
+          text: string;
+          html: string;
+          link: string | null;
+          images: string[];
+          time: string | null;
+          needsLinkResolve: boolean;
+        }> = [];
 
-      const postCount = await this.page.evaluate(() => {
+        // Mobile layout: posts live under screen-root > mainDiv > scrollDiv
         const screenRoot = document.getElementById("screen-root");
-        if (!screenRoot) return 0;
+        if (!screenRoot) return results;
         const mainDiv = screenRoot.children[0];
-        if (!mainDiv) return 0;
+        if (!mainDiv) return results;
+
         let scrollDiv: Element | null = null;
-        for (let j = 0; j < mainDiv.children.length; j++) {
-          const child = mainDiv.children[j];
+        for (let i = 0; i < mainDiv.children.length; i++) {
+          const child = mainDiv.children[i];
           if ((child.textContent || "").trim().length > 200) {
             scrollDiv = child;
             break;
           }
         }
-        if (!scrollDiv) return 0;
+        if (!scrollDiv) return results;
 
-        let count = 0;
-        for (const c of Array.from(scrollDiv.children)) {
-          const txt = (c.textContent || "").trim();
-          if (txt.length < 30) continue;
-          count++;
-        }
-        return count;
-      });
+        const feedChildren = Array.from(scrollDiv.children);
 
-      context.logger.debug({ scroll: i + 1, postsVisible: postCount }, "Scrolling Facebook feed");
+        for (let idx = 0; idx < feedChildren.length; idx++) {
+          const child = feedChildren[idx];
+          const fullText = (child.textContent || "").trim();
+          if (fullText.length === 0) continue;
 
-      if (postCount === prevPostCount) {
-        stableCount++;
-        if (stableCount >= 2) {
-          context.logger.info({ scroll: i + 1 }, "No additional posts loaded; stopping scroll");
-          break;
-        }
-      } else {
-        stableCount = 0;
-      }
-
-      prevPostCount = postCount;
-      this.scrollAttempts++;
-    }
-
-    // Extract posts from DOM
-    const rawPosts = await this.page.evaluate((groupId: string) => {
-      const results: Array<{
-        index: number;
-        id: string;
-        author: string | null;
-        text: string;
-        html: string;
-        link: string | null;
-        images: string[];
-        time: string | null;
-        needsLinkResolve: boolean;
-      }> = [];
-
-      const screenRoot = document.getElementById("screen-root");
-      if (!screenRoot) return results;
-      const mainDiv = screenRoot.children[0];
-      if (!mainDiv) return results;
-
-      let scrollDiv: Element | null = null;
-      for (let i = 0; i < mainDiv.children.length; i++) {
-        const child = mainDiv.children[i];
-        if ((child.textContent || "").trim().length > 200) {
-          scrollDiv = child;
-          break;
-        }
-      }
-      if (!scrollDiv) return results;
-
-      const feedChildren = Array.from(scrollDiv.children);
-
-      for (let idx = 0; idx < feedChildren.length; idx++) {
-        const child = feedChildren[idx];
-
-        const fullText = (child.textContent || "").trim();
-        if (fullText.length < 30) continue;
-
-        // Author
-        const storyLabels = child.querySelectorAll("[aria-label^='Unseen story from']");
-        let author: string | null = null;
-        if (storyLabels.length >= 1) {
-          author = storyLabels[0].getAttribute("aria-label")?.replace("Unseen story from ", "") || null;
-        }
-
-        // Timestamp
-        let timeText: string | null = null;
-        const allLabeled = child.querySelectorAll("[aria-label]");
-        for (const el of Array.from(allLabeled)) {
-          const label = el.getAttribute("aria-label") || "";
-          const m = label.match(/^(\d+\s*(?:hours?|hrs?|minutes?|mins?|days?|weeks?|seconds?)\s*ago|yesterday|just now)/i);
-          if (m) {
-            timeText = m[1];
-            break;
+          // Author
+          let author: string | null = null;
+          const storyLabels = Array.from(child.querySelectorAll("[aria-label*='story from']"));
+          if (storyLabels.length >= 1) {
+            author = storyLabels[0].getAttribute("aria-label")?.replace("Unseen story from ", "") || null;
           }
-        }
 
-        // Link (from data-video-tracking or will be resolved via click)
-        let link: string | null = null;
-        let postId: string | null = null;
+          // Timestamp — check aria-label and title attrs; also grab postId from permalink <a>
+          let timeText: string | null = null;
+          const TIME_RE = /(\d+\s*(?:hours?|hrs?|minutes?|mins?|days?|weeks?|seconds?)\s*ago|yesterday|just now|\w+\s+\d{1,2}(?:,\s*\d{4})?(?:\s+at\s+\d{1,2}:\d{2}\s*[ap]m)?)/i;
+          let link: string | null = null;
+          let postId: string | null = null;
 
-        const videoEl = child.querySelector("[data-video-id]");
-        if (videoEl) {
-          const videoId = videoEl.getAttribute("data-video-id");
-          if (videoId) {
-            link = `https://www.facebook.com/reel/${videoId}`;
-            postId = videoId;
-          }
-          const tracking = videoEl.getAttribute("data-video-tracking");
-          if (tracking) {
-            try {
-              const parsed = JSON.parse(tracking);
-              if (parsed.top_level_post_id) {
-                postId = parsed.top_level_post_id;
+          // Check for post IDs in /posts/{id}/ or /permalink/{id}/ or story_fbid=
+          const permalinkAs = Array.from(child.querySelectorAll(
+            `a[href*="/groups/${groupId}/posts/"], a[href*="/groups/${groupId}/permalink/"], a[href*="story_fbid="]`
+          ));
+          for (const a of permalinkAs) {
+            const label = a.getAttribute("aria-label") || a.getAttribute("title") || "";
+            if (!timeText) {
+              const m = label.match(TIME_RE);
+              if (m != null) timeText = m[1];
+            }
+            if (!postId) {
+              const href = (a as HTMLAnchorElement).href || "";
+              const cleanHref = href.split('?')[0];
+              const pm = cleanHref.match(/\/posts\/(\d+)/) || cleanHref.match(/\/permalink\/(\d+)/) || href.match(/story_fbid=(\d+)/);
+              if (pm != null) {
+                postId = pm[1];
                 link = `https://www.facebook.com/groups/${groupId}/permalink/${postId}/`;
               }
-            } catch {}
+            }
+            if (timeText && postId) break;
           }
-        }
 
-        if (!link) {
-          const trackingEl = child.querySelector("[data-video-tracking]");
-          if (trackingEl) {
-            try {
-              const parsed = JSON.parse(trackingEl.getAttribute("data-video-tracking") || "");
-              postId = parsed.top_level_post_id || parsed.mf_story_key || null;
-              if (postId) {
-                link = `https://www.facebook.com/groups/${groupId}/permalink/${postId}/`;
-              }
-            } catch {}
-          }
-        }
-
-        // Check if there's a content image we might click to resolve a link
-        let needsLinkResolve = false;
-        if (!link) {
-          const contentImg = child.querySelector("img[src*='scontent'], img[src*='fbcdn']");
-          if (contentImg) {
-            const src = contentImg.getAttribute("src") || "";
-            if (!src.includes("rsrc.php") && !src.includes("emoji")) {
-              needsLinkResolve = true;
+          // Fallback: scan all aria-label / title attrs for timestamp text
+          if (!timeText) {
+            for (const el of Array.from(child.querySelectorAll("[aria-label],[title]"))) {
+              const label = el.getAttribute("aria-label") || el.getAttribute("title") || "";
+              const m = label.match(TIME_RE);
+              if (m != null) { timeText = m[1]; break; }
             }
           }
-        }
 
-        // Fallback ID
-        if (!postId) {
-          let hashStr = fullText.substring(0, 100);
-          let hash = 0;
-          for (let i = 0; i < hashStr.length; i++) {
-            hash = ((hash << 5) - hash + hashStr.charCodeAt(i)) | 0;
+          const videoEl = child.querySelector("[data-video-id]");
+          if (videoEl != null && !postId) {
+            const videoId = videoEl.getAttribute("data-video-id");
+            if (videoId) {
+              link = `https://www.facebook.com/reel/${videoId}`;
+              postId = videoId;
+            }
+            const tracking = videoEl.getAttribute("data-video-tracking");
+            if (tracking != null) {
+              try {
+                const parsed = JSON.parse(tracking);
+                if (parsed.top_level_post_id) {
+                  postId = parsed.top_level_post_id;
+                  link = `https://www.facebook.com/groups/${groupId}/permalink/${postId}/`;
+                }
+              } catch {}
+            }
           }
-          postId = `hash_${Math.abs(hash)}`;
-        }
 
-        // Content text (raw in page context; cleaned in Node context)
-        let contentText = fullText;
+          if (!link && !postId) {
+            const trackingEl = child.querySelector("[data-video-tracking]");
+            if (trackingEl != null) {
+              try {
+                const parsed = JSON.parse(trackingEl.getAttribute("data-video-tracking") || "");
+                postId = parsed.top_level_post_id || parsed.mf_story_key || null;
+                if (postId) {
+                  link = `https://www.facebook.com/groups/${groupId}/permalink/${postId}/`;
+                }
+              } catch {}
+            }
+          }
 
-        // Images
-        const images: string[] = [];
-        child.querySelectorAll("img[src*='fbcdn'], img[src*='scontent']").forEach((img) => {
+          // Check if there's a content image we might click to resolve a link
+          let needsLinkResolve = false;
+          if (!link && !postId) {
+            const contentImg = child.querySelector("img[src*='scontent'], img[src*='fbcdn']");
+            if (contentImg != null) {
+              const src = contentImg.getAttribute("src") || "";
+              if (!src.includes("rsrc.php") && !src.includes("emoji")) {
+                needsLinkResolve = true;
+              }
+            }
+          }
+
+          // Fallback ID
+          if (!postId) {
+            const hashStr = fullText.substring(0, 100);
+            let hash = 0;
+            for (let i = 0; i < hashStr.length; i++) {
+              hash = ((hash << 5) - hash + hashStr.charCodeAt(i)) | 0;
+            }
+            postId = `hash_${Math.abs(hash)}`;
+          }
+
+          // Content text
+          const contentText = fullText;
+
+          // Images
+          const images: string[] = [];
+          child.querySelectorAll("img[src*='fbcdn'], img[src*='scontent']").forEach((img) => {
             const src = img.getAttribute("src");
             if (src && !src.includes("emoji") && !src.includes("rsrc.php")) {
               images.push(src);
             }
           });
 
-        const html = contentText ? `<p>${contentText.replace(/\n/g, "</p><p>")}</p>` : "";
-        const id = `fb_${postId}`;
+          const html = contentText ? `<p>${contentText.replace(/\n/g, "</p><p>")}</p>` : "";
+          const id = `fb_${postId}`;
 
-        if (contentText.length > 5 || images.length > 0) {
-          results.push({ index: idx, id, author, text: contentText, html, link, images, time: timeText, needsLinkResolve });
+          if (contentText.length > 5 || images.length > 0) {
+            results.push({ index: idx, id, author, text: contentText, html, link, images, time: timeText, needsLinkResolve });
+          }
         }
+
+        return results;
+      }, this.groupId || "");
+    };
+
+    const collectedPosts = new Map<string, {
+      index: number;
+      id: string;
+      author: string | null;
+      text: string;
+      html: string;
+      link: string | null;
+      images: string[];
+      time: string | null;
+      needsLinkResolve: boolean;
+    }>();
+
+    const mergeVisiblePosts = (visiblePosts: Awaited<ReturnType<typeof collectVisiblePosts>>) => {
+      for (const post of visiblePosts) {
+        if (!collectedPosts.has(post.id)) {
+          collectedPosts.set(post.id, post);
+          continue;
+        }
+
+        const existing = collectedPosts.get(post.id)!;
+        if (existing.text.length < post.text.length) {
+          existing.text = post.text;
+          existing.html = post.html;
+        }
+        if (!existing.link && post.link) {
+          existing.link = post.link;
+        }
+        if (!existing.author && post.author) {
+          existing.author = post.author;
+        }
+        if (!existing.time && post.time) {
+          existing.time = post.time;
+        }
+        if (existing.images.length < post.images.length) {
+          existing.images = post.images;
+        }
+        existing.needsLinkResolve = existing.needsLinkResolve || post.needsLinkResolve;
+      }
+    };
+
+    mergeVisiblePosts(await collectVisiblePosts());
+
+    // Collect across multiple virtualized slices by scrolling and merging unique posts.
+    // Small deltaY (900px) steps through the feed gradually so each newly-rendered batch
+    // is captured before it scrolls off the top of the virtualized list.
+    for (let i = 0; i < scrollLimit; i++) {
+      await this.page.mouse.move(200, 500);
+      await this.page.mouse.wheel({ deltaY: 900 });
+      await sleep(3000);
+
+      const visiblePosts = await collectVisiblePosts();
+      mergeVisiblePosts(visiblePosts);
+      const collectedCount = collectedPosts.size;
+
+      context.logger.debug(
+        { scroll: i + 1, postsVisible: visiblePosts.length, postsCollected: collectedCount },
+        "Scrolling Facebook feed"
+      );
+
+      if (collectedCount >= maxCollected) {
+        context.logger.info({ scroll: i + 1, collectedCount, maxCollected }, "Reached max collected posts; stopping scroll");
+        break;
       }
 
-      return results;
-    }, this.groupId || "");
+      if (collectedCount === prevCollectedCount) {
+        stableCount++;
+        if (stableCount >= 5) {
+          context.logger.info({ scroll: i + 1, collectedCount }, "No additional posts collected; stopping scroll");
+          break;
+        }
+      } else {
+        stableCount = 0;
+      }
+
+      prevCollectedCount = collectedCount;
+      this.scrollAttempts++;
+    }
+
+    const rawPosts = Array.from(collectedPosts.values());
 
     context.logger.info({ groupId: this.groupId, count: rawPosts.length }, "Extracted posts");
 

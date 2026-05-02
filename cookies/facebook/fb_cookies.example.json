@@ -1,34 +1,54 @@
 [
   {
+    "domain": ".facebook.com",
+    "expirationDate": 1800000000,
+    "hostOnly": false,
+    "httpOnly": true,
     "name": "c_user",
-    "value": "<facebook_user_id>",
-    "domain": ".facebook.com",
     "path": "/",
-    "httpOnly": true,
-    "secure": true
+    "sameSite": "no_restriction",
+    "secure": true,
+    "session": false,
+    "storeId": null,
+    "value": "<facebook_user_id>"
   },
   {
+    "domain": ".facebook.com",
+    "expirationDate": 1800000000,
+    "hostOnly": false,
+    "httpOnly": true,
     "name": "xs",
-    "value": "<session_token>",
-    "domain": ".facebook.com",
     "path": "/",
-    "httpOnly": true,
-    "secure": true
+    "sameSite": "no_restriction",
+    "secure": true,
+    "session": false,
+    "storeId": null,
+    "value": "<session_token>"
   },
   {
+    "domain": ".facebook.com",
+    "expirationDate": 1800000000,
+    "hostOnly": false,
+    "httpOnly": true,
     "name": "datr",
-    "value": "<device_token>",
-    "domain": ".facebook.com",
     "path": "/",
-    "httpOnly": true,
-    "secure": true
+    "sameSite": "no_restriction",
+    "secure": true,
+    "session": false,
+    "storeId": null,
+    "value": "<device_token>"
   },
   {
-    "name": "fr",
-    "value": "<fr_cookie_value>",
     "domain": ".facebook.com",
+    "expirationDate": 1800000000,
+    "hostOnly": false,
+    "httpOnly": false,
+    "name": "fr",
     "path": "/",
-    "httpOnly": true,
-    "secure": true
+    "sameSite": "no_restriction",
+    "secure": true,
+    "session": false,
+    "storeId": null,
+    "value": "<fr_cookie_value>"
   }
 ]

@@ -68,7 +68,7 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
       groupIds: [config.groupId],
       cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
       accessToken: process.env.SOURCE_ACCESS_TOKEN || undefined,
-      stopAtSourceId,
+      stopAtSourceId: siteId === "facebook" ? undefined : stopAtSourceId,
     },
   });
 

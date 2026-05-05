@@ -251,11 +251,17 @@ describe("feed-generator routes", () => {
     expect(buildFeedUrlMock).toHaveBeenCalledWith("http://localhost:3100", "group-1");
     expect(getPostsByGroupIdMock).toHaveBeenCalledWith(99);
     expect(feedCtorMock).toHaveBeenCalledTimes(1);
-    expect(addItemMock).toHaveBeenCalledTimes(1);
+    expect(addItemMock).toHaveBeenCalledTimes(2);
     expect(addItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "p-1",
         link: "https://www.facebook.com/groups/12345/posts/1",
+      })
+    );
+    expect(addItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "p-3",
+        link: "https://www.facebook.com/groups/12345",
       })
     );
     expect(res.set).toHaveBeenCalledWith("Content-Type", "application/rss+xml; charset=utf-8");

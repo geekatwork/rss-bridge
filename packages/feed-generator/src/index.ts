@@ -65,17 +65,19 @@ app.get("/feed/:groupId", async (req, res) => {
 
     for (const post of posts) {
       const postLink = post.link?.trim() || null;
-      const safeLink = postLink && !isLandingOrGroupUrl(postLink, group.url) ? postLink : undefined;
-      if (!safeLink) {
+      // Skip posts whose link is explicitly a landing/group page (bad link)
+      // but include posts with no link at all (null) — they still have content
+      if (postLink && isLandingOrGroupUrl(postLink, group.url)) {
         continue;
       }
+      const safeLink = postLink ?? undefined;
 
       feed.addItem({
         title: post.author_name
           ? `${post.author_name}: ${(post.content_text || "").slice(0, 80)}`
           : (post.content_text || "").slice(0, 80),
         id: post.source_post_id,
-        link: safeLink,
+        link: safeLink ?? group.url,
         description: post.content_html || post.content_text || "",
         date: post.posted_at,
         author: post.author_name

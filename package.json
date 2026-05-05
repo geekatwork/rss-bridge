@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "dump:facebook-snapshots": "bash scripts/dump-facebook-group-snapshots.sh",
+    "dump:facebook-unresolved": "bash scripts/dump-facebook-unresolved.sh",
+    "review:facebook-unresolved": "node scripts/render-facebook-unresolved-review.mjs",
     "test:build": "bash scripts/test-build.sh",
     "test:unit": "npm run -w packages/scraper test:unit && npm run -w packages/feed-generator test:unit",
     "test:smoke": "bash scripts/test-smoke.sh",

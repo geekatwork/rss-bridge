@@ -6,6 +6,7 @@ cookies/**/*.json
 !cookies/facebook/fb_cookies.example.json
 .vscode/*
 TODO.md
+packages/scraper/src/sites/facebook/__fixtures__/
 
 # Added by ggshield
 .cache_ggshield

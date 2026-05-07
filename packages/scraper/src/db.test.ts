@@ -10,7 +10,7 @@ vi.mock("pg", () => ({
   },
 }));
 
-import { ensureGroup, upsertItems, upsertPosts } from "./db.js";
+import { ensureGroup, pruneFacebookPosts, upsertItems, upsertPosts } from "./db.js";
 
 describe("scraper db", () => {
   beforeEach(() => {
@@ -99,5 +99,25 @@ describe("scraper db", () => {
       JSON.stringify(["https://example.com/1.jpg", "https://example.com/2.jpg"]),
       new Date("2026-02-01T00:00:00.000Z"),
     ]);
+  });
+
+  it("pruneFacebookPosts deletes only rows older than the cutoff using a parameterized date", async () => {
+    queryMock.mockResolvedValue({ rowCount: 3 });
+
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-02-08T12:00:00.000Z").getTime());
+
+    const deleted = await pruneFacebookPosts(7);
+
+    expect(deleted).toBe(3);
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringContaining("DELETE FROM posts AS p"),
+      [new Date("2026-02-01T12:00:00.000Z")]
+    );
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringContaining("facebook.com/groups/%"),
+      expect.any(Array)
+    );
+
+    nowSpy.mockRestore();
   });
 });

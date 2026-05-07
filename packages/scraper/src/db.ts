@@ -6,6 +6,10 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
+export async function closeDb(): Promise<void> {
+  await pool.end();
+}
+
 export async function ensureGroup(config: GroupConfig): Promise<number> {
   const result = await pool.query(
     `INSERT INTO groups (source_id, name, url)
@@ -85,6 +89,30 @@ export async function upsertItems(
     if (result.rowCount && result.rowCount > 0) upserted++;
   }
   return upserted;
+}
+
+export async function pruneFacebookPosts(retentionDays = 7): Promise<number> {
+  const safeRetentionDays = Number.isInteger(retentionDays) && retentionDays > 0 ? retentionDays : 7;
+  const cutoffDate = new Date(Date.now() - safeRetentionDays * 24 * 60 * 60 * 1000);
+
+  const result = await pool.query(
+    `DELETE FROM posts AS p
+     USING groups AS g
+     WHERE p.group_id = g.id
+       AND p.posted_at < $1
+       AND (
+         LOWER(g.url) LIKE 'https://www.facebook.com/groups/%'
+         OR LOWER(g.url) LIKE 'http://www.facebook.com/groups/%'
+         OR LOWER(g.url) LIKE 'https://m.facebook.com/groups/%'
+         OR LOWER(g.url) LIKE 'http://m.facebook.com/groups/%'
+         OR LOWER(g.url) LIKE 'https://mbasic.facebook.com/groups/%'
+         OR LOWER(g.url) LIKE 'http://mbasic.facebook.com/groups/%'
+       )
+     RETURNING p.id`,
+    [cutoffDate]
+  );
+
+  return result.rowCount ?? 0;
 }
 
 /**

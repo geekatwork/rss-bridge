@@ -1,6 +1,11 @@
 import cron from "node-cron";
 import { ScrapeEngine } from "./ScrapeEngine.js";
-import { ensureGroup, getLatestScrapedSourcePostId, upsertItems } from "./db.js";
+import {
+  ensureGroup,
+  getLatestScrapedSourcePostId,
+  pruneFacebookPosts,
+  upsertItems,
+} from "./db.js";
 import type { GroupConfig } from "./types.js";
 
 interface GroupConfigInput {
@@ -121,11 +126,38 @@ async function triggerRun(groups: GroupConfig[], trigger: "initial" | "scheduled
   }
 }
 
+async function triggerPrune(retentionDays: number): Promise<void> {
+  if (runInProgress) {
+    console.warn(`[${new Date().toISOString()}] Skipping prune run because a scrape cycle is already in progress`);
+    return;
+  }
+
+  runInProgress = true;
+  try {
+    const deleted = await pruneFacebookPosts(retentionDays);
+    console.log(
+      `[${new Date().toISOString()}] Pruned ${deleted} Facebook post(s) older than ${retentionDays} day(s)`
+    );
+  } catch (err) {
+    console.error(`Prune job failed:`, err instanceof Error ? err.message : err);
+  } finally {
+    runInProgress = false;
+  }
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 const groups = loadGroups();
 const schedule = process.env.SCRAPE_SCHEDULE || "0 */2 * * *"; // default: every 2 hours
+const pruneSchedule = process.env.PRUNE_SCHEDULE || "0 3 * * *";
+const pruneRetentionDays = parsePositiveInteger(process.env.PRUNE_RETENTION_DAYS, 7);
 
 console.log(`Scraper starting with ${groups.length} group(s)`);
 console.log(`Schedule: ${schedule}`);
+console.log(`Prune schedule: ${pruneSchedule} (Facebook groups older than ${pruneRetentionDays} day(s))`);
 console.log(`Groups: ${groups.map((g) => g.name).join(", ")}`);
 
 // Run once immediately on startup
@@ -140,6 +172,10 @@ cron.schedule(schedule, () => {
   setTimeout(() => {
     void triggerRun(groups, "scheduled");
   }, jitterMs);
+});
+
+cron.schedule(pruneSchedule, () => {
+  void triggerPrune(pruneRetentionDays);
 });
 
 console.log("Scraper is running. Press Ctrl+C to stop.");

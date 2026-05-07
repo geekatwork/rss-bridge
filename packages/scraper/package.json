@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
+    "prune": "tsx src/prune.ts",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test:unit": "vitest run"

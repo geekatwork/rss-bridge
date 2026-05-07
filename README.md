@@ -61,6 +61,8 @@ Schema uses source-generic identifiers:
 1. Create or update `.env` in repo root:
    - `POSTGRES_PASSWORD=<strong password>`
    - `SCRAPE_GROUPS=<json array>`
+   - `PRUNE_RETENTION_DAYS=7` (optional; Facebook groups only)
+   - `PRUNE_SCHEDULE=0 3 * * *` (optional; daily prune cron)
 
 2. Start the stack:
 
@@ -145,6 +147,25 @@ Notes:
 
 - Feed channel `link`/`id` intentionally points to the feed URL itself.
 - Items with landing/root-like links are filtered out.
+
+## Retention
+
+The scraper runs a daily retention job for Facebook groups only.
+
+- Posts older than 7 days are deleted based on `posted_at`.
+- The prune job is scoped to groups whose stored URL is a Facebook group URL.
+- Other sources are not pruned by this job.
+
+Tune or disable it with scraper environment variables:
+
+- `PRUNE_RETENTION_DAYS` defaults to `7`.
+- `PRUNE_SCHEDULE` defaults to `0 3 * * *`.
+
+Run it on demand:
+
+```bash
+npm run -w packages/scraper prune
+```
 
 ## TT-RSS Docker Networking
 

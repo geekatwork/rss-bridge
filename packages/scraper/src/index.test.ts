@@ -4,6 +4,7 @@ const {
   scheduleMock,
   ensureGroupMock,
   getLatestScrapedSourcePostIdMock,
+  pruneFacebookPostsMock,
   upsertItemsMock,
   engineInitMock,
   engineRegisterSiteMock,
@@ -13,6 +14,7 @@ const {
   scheduleMock: vi.fn(),
   ensureGroupMock: vi.fn(),
   getLatestScrapedSourcePostIdMock: vi.fn(),
+  pruneFacebookPostsMock: vi.fn(),
   upsertItemsMock: vi.fn(),
   engineInitMock: vi.fn(),
   engineRegisterSiteMock: vi.fn(),
@@ -29,6 +31,7 @@ vi.mock("node-cron", () => ({
 vi.mock("./db.js", () => ({
   ensureGroup: ensureGroupMock,
   getLatestScrapedSourcePostId: getLatestScrapedSourcePostIdMock,
+  pruneFacebookPosts: pruneFacebookPostsMock,
   upsertItems: upsertItemsMock,
 }));
 
@@ -55,6 +58,8 @@ describe("scraper index startup", () => {
     process.env = { ...originalEnv };
     delete process.env.SCRAPE_GROUPS;
     delete process.env.SCRAPE_SCHEDULE;
+    delete process.env.PRUNE_SCHEDULE;
+    delete process.env.PRUNE_RETENTION_DAYS;
     delete process.env.SOURCE_COOKIE_FILE;
     delete process.env.SOURCE_ACCESS_TOKEN;
 
@@ -97,6 +102,7 @@ describe("scraper index startup", () => {
     });
     engineShutdownMock.mockResolvedValue(undefined);
     upsertItemsMock.mockResolvedValue(1);
+    pruneFacebookPostsMock.mockResolvedValue(0);
   });
 
   afterEach(() => {
@@ -138,6 +144,7 @@ describe("scraper index startup", () => {
     expect(engineScrapeOneMock).toHaveBeenCalledWith("facebook");
     expect(upsertItemsMock).toHaveBeenCalledWith(101, expect.any(Array));
     expect(scheduleMock).toHaveBeenCalledWith("0 */2 * * *", expect.any(Function));
+    expect(scheduleMock).toHaveBeenCalledWith("0 3 * * *", expect.any(Function));
   });
 
   it("uses explicit siteId and id fallback, and does not upsert when no items", async () => {
@@ -202,6 +209,28 @@ describe("scraper index startup", () => {
     expect(scheduleMock).toHaveBeenCalledWith("*/15 * * * *", expect.any(Function));
   });
 
+  it("uses custom prune settings when configured", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+    process.env.PRUNE_SCHEDULE = "30 4 * * *";
+    process.env.PRUNE_RETENTION_DAYS = "9";
+
+    await import("./index.js");
+    await flush();
+
+    expect(scheduleMock).toHaveBeenCalledWith("30 4 * * *", expect.any(Function));
+
+    const pruneCb = scheduleMock.mock.calls[1]?.[1] as (() => Promise<void>) | undefined;
+    await pruneCb?.();
+
+    expect(pruneFacebookPostsMock).toHaveBeenCalledWith(9);
+  });
+
   it("exits when SCRAPE_GROUPS is missing", async () => {
     const exitError = new Error("process-exit");
     vi.spyOn(process, "exit").mockImplementation(() => {
@@ -249,6 +278,48 @@ describe("scraper index startup", () => {
     scheduleCb?.();
 
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping scheduled run because a scrape cycle is already in progress"));
+
+    resolveScrape?.();
+    await flush();
+  });
+
+  it("skips prune runs while a scrape cycle is in progress", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+
+    let resolveScrape: (() => void) | undefined;
+    engineScrapeOneMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveScrape = () =>
+            resolve({
+              site: "facebook",
+              jobId: "job-overlap-prune",
+              items: [],
+              errors: [],
+              startedAt: new Date("2026-01-01T00:00:00.000Z"),
+              completedAt: new Date("2026-01-01T00:00:01.000Z"),
+              durationMs: 1000,
+              itemsExtracted: 0,
+              linksResolved: 0,
+              linksResolveFailed: 0,
+            });
+        })
+    );
+
+    await import("./index.js");
+    await flush();
+
+    const pruneCb = scheduleMock.mock.calls[1]?.[1] as (() => Promise<void>) | undefined;
+    await pruneCb?.();
+
+    expect(pruneFacebookPostsMock).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping prune run because a scrape cycle is already in progress"));
 
     resolveScrape?.();
     await flush();

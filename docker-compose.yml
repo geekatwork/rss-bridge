@@ -47,6 +47,8 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-rss_bridge}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-rss_bridge}
       SCRAPE_GROUPS: ${SCRAPE_GROUPS}
       SCRAPE_SCHEDULE: ${SCRAPE_SCHEDULE:-0 */2 * * *}
+      PRUNE_SCHEDULE: ${PRUNE_SCHEDULE:-0 3 * * *}
+      PRUNE_RETENTION_DAYS: ${PRUNE_RETENTION_DAYS:-7}
       SOURCE_ACCESS_TOKEN: ${SOURCE_ACCESS_TOKEN:-}
     security_opt:
       - no-new-privileges:true

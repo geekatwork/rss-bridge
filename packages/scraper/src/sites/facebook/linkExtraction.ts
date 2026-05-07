@@ -197,8 +197,9 @@ export function extractFacebookPageFallbackFromCandidates(candidates: string[]):
  * Unlike extractFacebookPageFallbackFromCandidates this does NOT return bare page/profile links
  * — it only returns links that point to a specific piece of content (have a postId).
  */
-export function extractFacebookPostLinkFromCandidates(candidates: string[]): string | null {
+export function extractFacebookPostLinkFromCandidates(candidates: string[]): { link: string | null; multipleInstagramLinks: string[] | null } {
   let firstFacebookContentLink: string | null = null;
+  const instagramLinks: string[] = [];
 
   for (const raw of candidates) {
     const extracted = extractFacebookLinkFromCandidate(raw);
@@ -207,7 +208,10 @@ export function extractFacebookPostLinkFromCandidates(candidates: string[]): str
     }
 
     if (extracted.link.includes("instagram.com/")) {
-      return extracted.link;
+      if (!instagramLinks.includes(extracted.link)) {
+        instagramLinks.push(extracted.link);
+      }
+      continue;
     }
 
     if (!firstFacebookContentLink) {
@@ -215,7 +219,32 @@ export function extractFacebookPostLinkFromCandidates(candidates: string[]): str
     }
   }
 
-  return firstFacebookContentLink;
+  if (instagramLinks.length === 0) {
+    return { link: firstFacebookContentLink, multipleInstagramLinks: null };
+  }
+
+  // Pick the most frequently referenced Instagram link; ties go to DOM order (first).
+  const freq = new Map<string, number>();
+  for (const raw of candidates) {
+    const extracted = extractFacebookLinkFromCandidate(raw);
+    if (extracted.link?.includes("instagram.com/")) {
+      freq.set(extracted.link, (freq.get(extracted.link) ?? 0) + 1);
+    }
+  }
+  let bestLink = instagramLinks[0];
+  let bestCount = freq.get(bestLink) ?? 1;
+  for (const link of instagramLinks) {
+    const count = freq.get(link) ?? 1;
+    if (count > bestCount) {
+      bestLink = link;
+      bestCount = count;
+    }
+  }
+
+  return {
+    link: bestLink,
+    multipleInstagramLinks: instagramLinks.length > 1 ? instagramLinks : null,
+  };
 }
 
 /**

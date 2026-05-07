@@ -45,7 +45,7 @@ function replayFixture(fixture: UnresolvedFacebookFixture): string | null {
   }
 
   if (fixture.candidateUrls.length > 0) {
-    const postLink = extractFacebookPostLinkFromCandidates(fixture.candidateUrls);
+    const { link: postLink } = extractFacebookPostLinkFromCandidates(fixture.candidateUrls);
     if (postLink) return postLink;
     const albumLink = extractFacebookAlbumLinkFromImageUrls(fixture.imageUrls);
     if (albumLink) return albumLink;

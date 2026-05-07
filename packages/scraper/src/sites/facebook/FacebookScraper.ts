@@ -1176,7 +1176,10 @@ export class FacebookScraper extends SiteScraper {
             return hrefs;
           }, postIndex);
 
-          const postLink = extractFacebookPostLinkFromCandidates(candidateHrefs);
+          const { link: postLink, multipleInstagramLinks } = extractFacebookPostLinkFromCandidates(candidateHrefs);
+          if (multipleInstagramLinks) {
+            context.logger.warn({ id: item.sourceId, instagramLinks: multipleInstagramLinks }, "Multiple Instagram links in post candidates; picked most frequent");
+          }
           if (postLink) {
             item.link = postLink;
             context.logger.info({ id: item.sourceId, link: postLink }, "Resolved post link from href (shared post fallback)");

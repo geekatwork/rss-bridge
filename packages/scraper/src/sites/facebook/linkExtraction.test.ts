@@ -192,7 +192,7 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "/photo/?fbid=1584469407021487&set=a.724514279683675",
       "/pages/SomePage/123456789",
     ];
-    expect(extractFacebookPostLinkFromCandidates(hrefs)).toBe(
+    expect(extractFacebookPostLinkFromCandidates(hrefs).link).toBe(
       "https://www.facebook.com/photo/?fbid=1584469407021487",
     );
   });
@@ -202,7 +202,7 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "/profile.php?id=100088123456789",
       "/groups/669567236527981/permalink/3577830312368311/",
     ];
-    expect(extractFacebookPostLinkFromCandidates(hrefs)).toBe(
+    expect(extractFacebookPostLinkFromCandidates(hrefs).link).toBe(
       "https://www.facebook.com/groups/669567236527981/permalink/3577830312368311/",
     );
   });
@@ -212,7 +212,7 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "/SomePage",
       "/reel/2781310828870227/",
     ];
-    expect(extractFacebookPostLinkFromCandidates(hrefs)).toBe(
+    expect(extractFacebookPostLinkFromCandidates(hrefs).link).toBe(
       "https://www.facebook.com/reel/2781310828870227",
     );
   });
@@ -222,11 +222,11 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "/SomePage",
       "/profile.php?id=100088123456789",
     ];
-    expect(extractFacebookPostLinkFromCandidates(hrefs)).toBeNull();
+    expect(extractFacebookPostLinkFromCandidates(hrefs).link).toBeNull();
   });
 
   it("returns null for an empty list", () => {
-    expect(extractFacebookPostLinkFromCandidates([])).toBeNull();
+    expect(extractFacebookPostLinkFromCandidates([]).link).toBeNull();
   });
 
   it("prefers photo link over page link when photo appears first", () => {
@@ -234,7 +234,7 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "/photo/?fbid=9999999999999",
       "/SomePage",
     ];
-    expect(extractFacebookPostLinkFromCandidates(hrefs)).toBe(
+    expect(extractFacebookPostLinkFromCandidates(hrefs).link).toBe(
       "https://www.facebook.com/photo/?fbid=9999999999999",
     );
   });
@@ -245,9 +245,24 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "https://l.facebook.com/l.php?u=https%3A%2F%2Fwww.instagram.com%2Fp%2FDXexample1%2F%3Figsh%3DMQ%253D%253D",
     ];
 
-    expect(extractFacebookPostLinkFromCandidates(hrefs)).toBe(
+    expect(extractFacebookPostLinkFromCandidates(hrefs).link).toBe(
       "https://www.instagram.com/p/DXexample1/",
     );
+  });
+
+  it("picks the most frequent instagram link when multiple are present", () => {
+    const hrefs = [
+      "https://www.instagram.com/p/DXwrong1/",
+      "https://www.instagram.com/p/DXcorrect/",
+      "https://www.instagram.com/p/DXcorrect/",
+      "https://www.instagram.com/p/DXcorrect/",
+    ];
+    const result = extractFacebookPostLinkFromCandidates(hrefs);
+    expect(result.link).toBe("https://www.instagram.com/p/DXcorrect/");
+    expect(result.multipleInstagramLinks).toEqual([
+      "https://www.instagram.com/p/DXwrong1/",
+      "https://www.instagram.com/p/DXcorrect/",
+    ]);
   });
 });
 

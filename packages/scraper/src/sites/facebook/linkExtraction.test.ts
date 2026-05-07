@@ -238,6 +238,17 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "https://www.facebook.com/photo/?fbid=9999999999999",
     );
   });
+
+  it("prefers instagram links over facebook content links when both are present", () => {
+    const hrefs = [
+      "/photo/?fbid=9999999999999",
+      "https://l.facebook.com/l.php?u=https%3A%2F%2Fwww.instagram.com%2Fp%2FDXexample1%2F%3Figsh%3DMQ%253D%253D",
+    ];
+
+    expect(extractFacebookPostLinkFromCandidates(hrefs)).toBe(
+      "https://www.instagram.com/p/DXexample1/",
+    );
+  });
 });
 
 describe("extractFacebookAlbumLinkFromImageUrls", () => {

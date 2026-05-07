@@ -198,13 +198,24 @@ export function extractFacebookPageFallbackFromCandidates(candidates: string[]):
  * — it only returns links that point to a specific piece of content (have a postId).
  */
 export function extractFacebookPostLinkFromCandidates(candidates: string[]): string | null {
+  let firstFacebookContentLink: string | null = null;
+
   for (const raw of candidates) {
     const extracted = extractFacebookLinkFromCandidate(raw);
-    if (extracted.link && extracted.postId) {
+    if (!extracted.link || !extracted.postId) {
+      continue;
+    }
+
+    if (extracted.link.includes("instagram.com/")) {
       return extracted.link;
     }
+
+    if (!firstFacebookContentLink) {
+      firstFacebookContentLink = extracted.link;
+    }
   }
-  return null;
+
+  return firstFacebookContentLink;
 }
 
 /**

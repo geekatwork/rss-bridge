@@ -326,6 +326,7 @@ export class FacebookScraper extends SiteScraper {
   async fetchListing(context: ScraperContext): Promise<void> {
     const groupIds = this.config.options.groupIds as string[];
     const stopAtSourceId = this.config.options.stopAtSourceId as string | undefined;
+    const boundaryFallbackLimit = (this.config.options.boundaryFallbackLimit as number) || 50;
     if (!groupIds || groupIds.length === 0) {
       throw new Error("No groupIds provided in config.options");
     }
@@ -339,9 +340,9 @@ export class FacebookScraper extends SiteScraper {
       const mapped = posts.map((p) => this.postToItem(p));
       if (stopAtSourceId) {
         const markerIndex = mapped.findIndex((item) => item.sourceId === stopAtSourceId);
-        this.apiItems = markerIndex >= 0 ? mapped.slice(0, markerIndex) : mapped;
+        this.apiItems = markerIndex >= 0 ? mapped.slice(0, markerIndex) : mapped.slice(0, boundaryFallbackLimit);
       } else {
-        this.apiItems = mapped;
+        this.apiItems = mapped.slice(0, boundaryFallbackLimit);
       }
       context.logger.info({ groupId: this.groupId, count: this.apiItems.length }, "Graph API returned items");
       return;
@@ -394,6 +395,7 @@ export class FacebookScraper extends SiteScraper {
   async extractItems(context: ScraperContext): Promise<NormalizedItem[]> {
     if (!this.groupId) throw new Error("Group ID not set");
     const stopAtSourceId = this.config.options.stopAtSourceId as string | undefined;
+    const boundaryFallbackLimit = (this.config.options.boundaryFallbackLimit as number) || 50;
 
     if (this.useApi) {
       return this.apiItems;
@@ -406,7 +408,7 @@ export class FacebookScraper extends SiteScraper {
     }
 
     const scrollLimit = (this.config.options.scrollAttempts as number) || 30;
-    const maxCollected = (this.config.options.maxCollectedPosts as number) || 60;
+    const maxCollected = (this.config.options.maxCollectedPosts as number) || boundaryFallbackLimit;
     let stableCount = 0;
     let prevCollectedCount = 0;
 
@@ -723,13 +725,14 @@ export class FacebookScraper extends SiteScraper {
     const markerIndex = stopAtSourceId
       ? rawPosts.findIndex((post) => post.id === stopAtSourceId)
       : -1;
-    const boundedRawPosts = markerIndex >= 0 ? rawPosts.slice(0, markerIndex) : rawPosts;
+    const boundedRawPosts = markerIndex >= 0 ? rawPosts.slice(0, markerIndex) : rawPosts.slice(0, boundaryFallbackLimit);
 
     context.logger.info(
       {
         groupId: this.groupId,
         rawCount: rawPosts.length,
         boundedCount: boundedRawPosts.length,
+        boundaryFallbackLimit,
         stopAtSourceId: stopAtSourceId || null,
         markerFound: markerIndex >= 0,
       },

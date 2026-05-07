@@ -90,6 +90,42 @@ describe("FacebookScraper API mode", () => {
     await scraper.init(context);
     await expect(scraper.fetchListing(context)).rejects.toThrow("No groupIds provided in config.options");
   });
+
+  it("caps API items at boundary fallback limit when stop marker is missing", async () => {
+    const posts = Array.from({ length: 55 }, (_, i) => ({
+      sourcePostId: `post_${i + 1}`,
+      authorName: "Author",
+      contentText: `Hello ${i + 1}`,
+      contentHtml: `<p>Hello ${i + 1}</p>`,
+      link: `https://example.com/post/${i + 1}`,
+      imageUrls: [],
+      postedAt: new Date("2026-01-01T00:00:00.000Z"),
+    }));
+    vi.mocked(fetchPostsViaApi).mockResolvedValue(posts);
+
+    const cfg: SiteConfig = {
+      siteId: "facebook",
+      name: "Facebook",
+      enabled: true,
+      options: {
+        accessToken: "token",
+        groupIds: ["12345"],
+        stopAtSourceId: "post_999",
+        boundaryFallbackLimit: 50,
+      },
+    };
+
+    const scraper = new FacebookScraper(cfg);
+    const context = makeContext();
+
+    await scraper.init(context);
+    await scraper.fetchListing(context);
+    const items = await scraper.extractItems(context);
+
+    expect(items).toHaveLength(50);
+    expect(items[0].sourceId).toBe("post_1");
+    expect(items[49].sourceId).toBe("post_50");
+  });
 });
 
 describe("Facebook post content cleaning logic", () => {

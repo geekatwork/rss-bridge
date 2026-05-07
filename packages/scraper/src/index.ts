@@ -62,6 +62,7 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
 
   const groupId = await ensureGroup(config);
   const stopAtSourceId = await getLatestScrapedSourcePostId(groupId);
+  const facebookBoundaryFallbackLimit = parsePositiveInteger(process.env.FACEBOOK_BOUNDARY_FALLBACK_LIMIT, 50);
 
   const engine = new ScrapeEngine();
   await engine.init();
@@ -73,7 +74,13 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
       groupIds: [config.groupId],
       cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
       accessToken: process.env.SOURCE_ACCESS_TOKEN || undefined,
-      stopAtSourceId: siteId === "facebook" ? undefined : stopAtSourceId,
+      stopAtSourceId: stopAtSourceId ?? undefined,
+      ...(siteId === "facebook"
+        ? {
+          boundaryFallbackLimit: facebookBoundaryFallbackLimit,
+          maxCollectedPosts: facebookBoundaryFallbackLimit,
+        }
+        : {}),
     },
   });
 

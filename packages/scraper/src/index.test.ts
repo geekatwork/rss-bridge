@@ -209,6 +209,32 @@ describe("scraper index startup", () => {
     expect(scheduleMock).toHaveBeenCalledWith("*/15 * * * *", expect.any(Function));
   });
 
+  it("passes DB boundary marker to facebook scraper config", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+    getLatestScrapedSourcePostIdMock.mockResolvedValueOnce("fb_hash_boundary");
+
+    await import("./index.js");
+    await flush();
+    await flush();
+
+    expect(engineRegisterSiteMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        siteId: "facebook",
+        options: expect.objectContaining({
+          stopAtSourceId: "fb_hash_boundary",
+          boundaryFallbackLimit: 50,
+          maxCollectedPosts: 50,
+        }),
+      })
+    );
+  });
+
   it("uses custom prune settings when configured", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       {

@@ -21,3 +21,4 @@ CREATE TABLE posts (
 
 CREATE INDEX idx_posts_posted_at ON posts (posted_at DESC);
 CREATE INDEX idx_posts_group_id ON posts (group_id);
+CREATE UNIQUE INDEX uq_posts_link_non_null ON posts (link) WHERE link IS NOT NULL;

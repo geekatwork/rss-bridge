@@ -167,6 +167,14 @@ Run it on demand:
 npm run -w packages/scraper prune
 ```
 
+## Link Deduplication
+
+Post links are treated as unique after URL canonicalization.
+
+- Duplicate non-null links are ignored silently.
+- Existing rows are not merged or updated when another post arrives with the same canonical link.
+- Repeat scrapes for the same `source_post_id` still follow the normal upsert path.
+
 ## TT-RSS Docker Networking
 
 If TT-RSS runs in Docker and subscribes to `http://feed-generator/feed/<groupId>`,

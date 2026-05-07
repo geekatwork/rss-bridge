@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GroupConfig, NormalizedPost } from "./types.js";
 import type { NormalizedItem } from "./core/index.js";
 
-const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
+const { queryMock, endMock } = vi.hoisted(() => ({
+  queryMock: vi.fn(),
+  endMock: vi.fn(),
+}));
 
 vi.mock("pg", () => ({
   Pool: class {
     query = queryMock;
+    end = endMock;
   },
 }));
 
@@ -14,7 +18,8 @@ import { ensureGroup, pruneFacebookPosts, upsertItems, upsertPosts } from "./db.
 
 describe("scraper db", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    queryMock.mockReset();
+    endMock.mockReset();
   });
 
   it("ensureGroup upserts and returns id", async () => {
@@ -38,8 +43,11 @@ describe("scraper db", () => {
 
   it("upsertPosts counts only rows with rowCount > 0", async () => {
     queryMock
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rowCount: 1 })
-      .mockResolvedValueOnce({ rowCount: 0 });
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0 })
+      ;
 
     const posts: NormalizedPost[] = [
       {
@@ -65,12 +73,22 @@ describe("scraper db", () => {
     const upserted = await upsertPosts(10, posts);
 
     expect(upserted).toBe(1);
-    expect(queryMock).toHaveBeenCalledTimes(2);
-    expect(queryMock.mock.calls[0]?.[1]?.[6]).toBe(JSON.stringify(["https://example.com/a.jpg"]));
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO posts"), [
+      10,
+      "p1",
+      "Alice",
+      "hello",
+      "<p>hello</p>",
+      "https://example.com/1",
+      JSON.stringify(["https://example.com/a.jpg"]),
+      new Date("2026-01-01T00:00:00.000Z"),
+    ]);
   });
 
   it("upsertItems maps normalized items fields correctly", async () => {
-    queryMock.mockResolvedValue({ rowCount: 1 });
+    queryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1 });
 
     const items: NormalizedItem[] = [
       {
@@ -99,6 +117,63 @@ describe("scraper db", () => {
       JSON.stringify(["https://example.com/1.jpg", "https://example.com/2.jpg"]),
       new Date("2026-02-01T00:00:00.000Z"),
     ]);
+  });
+
+  it("skips insert when a canonicalized link already exists on another row", async () => {
+    queryMock
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            source_post_id: "existing-post",
+          },
+        ],
+      });
+
+    const items: NormalizedItem[] = [
+      {
+        sourceId: "new-source-id",
+        sourceSite: "facebook",
+        title: "title",
+        contentText: null,
+        contentHtml: null,
+        authorName: null,
+        link: "https://example.com/post/1?fbclid=tracking",
+        mediaUrls: ["https://example.com/old.jpg", "https://example.com/new.jpg"],
+        publishedAt: new Date("2026-02-01T00:00:00.000Z"),
+      },
+    ];
+
+    const upserted = await upsertItems(11, items);
+
+    expect(upserted).toBe(0);
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining("WHERE link = $1"), [
+      "https://example.com/post/1",
+    ]);
+    expect(queryMock).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO posts"), expect.any(Array));
+  });
+
+  it("silently skips when the unique link index rejects a concurrent duplicate", async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockRejectedValueOnce({ code: "23505", constraint: "uq_posts_link_non_null" });
+
+    const items: NormalizedItem[] = [
+      {
+        sourceId: "new-source-id",
+        sourceSite: "facebook",
+        title: "title",
+        contentText: "content",
+        contentHtml: "<p>content</p>",
+        authorName: "Bob",
+        link: "https://example.com/post/1",
+        mediaUrls: [],
+        publishedAt: new Date("2026-02-01T00:00:00.000Z"),
+      },
+    ];
+
+    const upserted = await upsertItems(11, items);
+
+    expect(upserted).toBe(0);
   });
 
   it("pruneFacebookPosts deletes only rows older than the cutoff using a parameterized date", async () => {

@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import type { NormalizedPost, GroupConfig } from "./types.js";
 import type { NormalizedItem } from "./core/index.js";
+import { canonicalizeUrl } from "./core/utils.js";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -21,12 +22,49 @@ export async function ensureGroup(config: GroupConfig): Promise<number> {
   return result.rows[0].id;
 }
 
-export async function upsertPosts(
-  groupId: number,
-  posts: NormalizedPost[]
-): Promise<number> {
-  let upserted = 0;
-  for (const post of posts) {
+interface PersistablePost {
+  sourcePostId: string;
+  authorName: string | null;
+  contentText: string | null;
+  contentHtml: string | null;
+  link: string | null;
+  imageUrls: string[];
+  postedAt: Date;
+}
+
+interface ExistingPostRow {
+  source_post_id: string;
+}
+
+interface PgErrorLike {
+  code?: string;
+  constraint?: string;
+}
+
+function normalizeLink(link: string | null | undefined): string | null {
+  const trimmed = link?.trim();
+  if (!trimmed) return null;
+  return canonicalizeUrl(trimmed);
+}
+
+async function persistPost(groupId: number, post: PersistablePost): Promise<number> {
+  const normalizedLink = normalizeLink(post.link);
+
+  if (normalizedLink) {
+    const existingByLink = await pool.query<ExistingPostRow>(
+      `SELECT source_post_id
+       FROM posts
+       WHERE link = $1
+       LIMIT 1`,
+      [normalizedLink]
+    );
+    const linkRow = existingByLink.rows[0] ?? null;
+    if (linkRow && linkRow.source_post_id !== post.sourcePostId) {
+      return 0;
+    }
+  }
+
+  try {
     const result = await pool.query(
       `INSERT INTO posts (group_id, source_post_id, author_name, content_text, content_html, link, image_urls, posted_at, scraped_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
@@ -44,12 +82,38 @@ export async function upsertPosts(
         post.authorName,
         post.contentText,
         post.contentHtml,
-        post.link,
+        normalizedLink,
         JSON.stringify(post.imageUrls),
         post.postedAt,
       ]
     );
-    if (result.rowCount && result.rowCount > 0) upserted++;
+
+    return result.rowCount ?? 0;
+  } catch (error) {
+    const pgError = error as PgErrorLike;
+    if (pgError.code === "23505" && pgError.constraint === "uq_posts_link_non_null") {
+      return 0;
+    }
+    throw error;
+  }
+}
+
+export async function upsertPosts(
+  groupId: number,
+  posts: NormalizedPost[]
+): Promise<number> {
+  let upserted = 0;
+  for (const post of posts) {
+    const result = await persistPost(groupId, {
+      sourcePostId: post.sourcePostId,
+      authorName: post.authorName,
+      contentText: post.contentText,
+      contentHtml: post.contentHtml,
+      link: post.link,
+      imageUrls: post.imageUrls,
+      postedAt: post.postedAt,
+    });
+    if (result > 0) upserted++;
   }
   return upserted;
 }
@@ -64,29 +128,16 @@ export async function upsertItems(
 ): Promise<number> {
   let upserted = 0;
   for (const item of items) {
-    const result = await pool.query(
-      `INSERT INTO posts (group_id, source_post_id, author_name, content_text, content_html, link, image_urls, posted_at, scraped_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-       ON CONFLICT (source_post_id) DO UPDATE SET
-         author_name = EXCLUDED.author_name,
-         content_text = EXCLUDED.content_text,
-         content_html = EXCLUDED.content_html,
-         link = EXCLUDED.link,
-         image_urls = EXCLUDED.image_urls,
-         scraped_at = NOW()
-       RETURNING id`,
-      [
-        groupId,
-        item.sourceId,
-        item.authorName,
-        item.contentText,
-        item.contentHtml,
-        item.link,
-        JSON.stringify(item.mediaUrls),
-        item.publishedAt,
-      ]
-    );
-    if (result.rowCount && result.rowCount > 0) upserted++;
+    const result = await persistPost(groupId, {
+      sourcePostId: item.sourceId,
+      authorName: item.authorName,
+      contentText: item.contentText,
+      contentHtml: item.contentHtml,
+      link: item.link,
+      imageUrls: item.mediaUrls,
+      postedAt: item.publishedAt,
+    });
+    if (result > 0) upserted++;
   }
   return upserted;
 }

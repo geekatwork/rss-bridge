@@ -270,6 +270,95 @@ export class CompetitionsNzScraper extends SiteScraper {
     return element as ElementHandle<Element>;
   }
 
+  private async findVisibleSortControl(maxTop = 1400): Promise<ElementHandle<Element> | null> {
+    if (!this.page) throw new Error("Page not initialized");
+
+    const handle = await this.page.evaluateHandle((topLimit) => {
+      const labels = ["Newest", "Popular", "Ending Soon", "Prize Value"];
+      const candidates = Array.from(document.querySelectorAll<HTMLElement>("button, a, [role='button']"));
+
+      const normalizedText = (value: string) => value.replace(/\s+/g, " ").trim();
+      for (const candidate of candidates) {
+        const text = normalizedText(candidate.textContent || "");
+        if (!labels.includes(text)) {
+          continue;
+        }
+
+        const rect = candidate.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          continue;
+        }
+
+        if (rect.top < 0 || rect.top > topLimit) {
+          continue;
+        }
+
+        return candidate;
+      }
+
+      return null;
+    }, maxTop);
+
+    const element = handle.asElement();
+    if (!element) {
+      await handle.dispose();
+      return null;
+    }
+
+    return element as ElementHandle<Element>;
+  }
+
+  private async readElementText(element: ElementHandle<Element>): Promise<string> {
+    if (!this.page) throw new Error("Page not initialized");
+
+    return this.page.evaluate(
+      (node) => (node.textContent || "").replace(/\s+/g, " ").trim(),
+      element,
+    );
+  }
+
+  private async ensureNewestSort(context: ScraperContext): Promise<void> {
+    if (!this.page) throw new Error("Page not initialized");
+
+    const sortControl = await this.findVisibleSortControl();
+    if (!sortControl) {
+      context.logger.warn("Competitions NZ sort control not found; continuing with site default ordering");
+      return;
+    }
+
+    const currentSort = await this.readElementText(sortControl);
+    if (/^newest$/i.test(currentSort)) {
+      context.logger.info({ sort: currentSort }, "Competitions NZ sort is already Newest");
+      await sortControl.dispose();
+      return;
+    }
+
+    await sortControl.click();
+    await sortControl.dispose();
+
+    const newestOption = await this.findClickableByText(/^newest$/i);
+    if (!newestOption) {
+      context.logger.warn({ currentSort }, "Could not find Newest option after opening sort control");
+      return;
+    }
+
+    await Promise.all([
+      this.page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => null),
+      newestOption.click(),
+    ]);
+    await newestOption.dispose();
+
+    const appliedSort = await this.findVisibleSortControl();
+    if (!appliedSort) {
+      context.logger.warn("Could not verify Competitions NZ sort after selection");
+      return;
+    }
+
+    const appliedSortText = await this.readElementText(appliedSort);
+    await appliedSort.dispose();
+    context.logger.info({ sort: appliedSortText }, "Applied Competitions NZ sort setting");
+  }
+
   private async login(context: ScraperContext): Promise<void> {
     if (!this.page) throw new Error("Page not initialized");
 
@@ -316,6 +405,8 @@ export class CompetitionsNzScraper extends SiteScraper {
 
     const sourceUrl = (this.config.options.sourceUrl as string | undefined) || `${COMPETITIONS_NZ_BASE_URL}/`;
     await this.page.goto(sourceUrl, { waitUntil: "networkidle2", timeout: 60000 });
+    await this.page.waitForSelector(COMPETITIONS_CARD_SELECTOR, { timeout: 60000 });
+    await this.ensureNewestSort(context);
     await this.page.waitForSelector(COMPETITIONS_CARD_SELECTOR, { timeout: 60000 });
     context.logger.info("Collecting all competitions with pagination; excluding only Purchase Required entries");
     this.usePagingFallback = true;

@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FacebookScraper } from "./FacebookScraper.js";
 import { cleanFacebookPostText } from "./FacebookScraper.js";
+import { isLikelyFacebookNonPostContent } from "./FacebookScraper.js";
 import { fetchPostsViaApi } from "./graphApi.js";
 import type { ScraperContext, SiteConfig } from "../../core/types.js";
 
@@ -148,5 +149,17 @@ describe("Facebook post content cleaning logic", () => {
     const raw = "\uE000\uF8FFGIVEAWAY\uF8FF\uE000";
     const cleaned = cleanFacebookPostText(raw);
     expect(cleaned).toBe("GIVEAWAY");
+  });
+
+  it("detects pseudo-post UI fragments", () => {
+    expect(isLikelyFacebookNonPostContent("Most relevantSORT")).toBe(true);
+    expect(isLikelyFacebookNonPostContent("Write something... Photo Feeling")).toBe(true);
+    expect(isLikelyFacebookNonPostContent("VideosAnnouncementsEvents")).toBe(true);
+    expect(isLikelyFacebookNonPostContent("Facebook Competitions NZ Public group·12Kmembers Joined Invite")).toBe(true);
+    expect(isLikelyFacebookNonPostContent("Let's welcome our new members: ...")).toBe(true);
+  });
+
+  it("does not flag normal giveaway post text as pseudo-post", () => {
+    expect(isLikelyFacebookNonPostContent("INSTAGRAM giveaway - Win a prize pack now")).toBe(false);
   });
 });

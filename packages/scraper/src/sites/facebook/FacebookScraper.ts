@@ -52,6 +52,21 @@ export function cleanFacebookPostText(raw: string, author?: string): string {
   return t;
 }
 
+export function isLikelyFacebookNonPostContent(text: string): boolean {
+  const normalized = text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
+  if (!normalized) return true;
+  if (normalized === "mostrelevantsort") return true;
+  if (normalized.startsWith("writesomething")) return true;
+  if (normalized === "videosannouncementsevents") return true;
+  if (/publicgroup.*members.*joined.*invite/.test(normalized)) return true;
+  if (normalized.startsWith("letswelcomeournewmembers")) return true;
+
+  return false;
+}
+
 // --- MAIN CLASS ---
 
 interface CookieEntry {
@@ -586,7 +601,8 @@ export class FacebookScraper extends SiteScraper {
           const html = contentText ? `<p>${contentText.replace(/\n/g, "</p><p>")}</p>` : "";
           const id = `fb_${postId}`;
 
-          // Filter: only include posts with meaningful content (>15 chars) or with images
+          // Filter: only include posts with meaningful content (>15 chars) or with images.
+          // Pseudo-post filtering is done outside page.evaluate in Node context.
           if (contentText.length > 15 || images.length > 0) {
             results.push({
               index: idx,
@@ -722,16 +738,24 @@ export class FacebookScraper extends SiteScraper {
 
     context.logger.info({ groupId: this.groupId, count: rawPosts.length }, "Extracted posts");
 
+    const filteredRawPosts = rawPosts.filter((post) => {
+      const cleanedForSignal = cleanFacebookPostText(post.text || "", post.author || undefined);
+      return !isLikelyFacebookNonPostContent(cleanedForSignal || post.text || "");
+    });
+
     const markerIndex = stopAtSourceId
-      ? rawPosts.findIndex((post) => post.id === stopAtSourceId)
+      ? filteredRawPosts.findIndex((post) => post.id === stopAtSourceId)
       : -1;
-    const boundedRawPosts = markerIndex >= 0 ? rawPosts.slice(0, markerIndex) : rawPosts.slice(0, boundaryFallbackLimit);
+    const boundedFilteredPosts = markerIndex >= 0
+      ? filteredRawPosts.slice(0, markerIndex)
+      : filteredRawPosts.slice(0, boundaryFallbackLimit);
 
     context.logger.info(
       {
         groupId: this.groupId,
         rawCount: rawPosts.length,
-        boundedCount: boundedRawPosts.length,
+        filteredCount: filteredRawPosts.length,
+        boundedCount: boundedFilteredPosts.length,
         boundaryFallbackLimit,
         stopAtSourceId: stopAtSourceId || null,
         markerFound: markerIndex >= 0,
@@ -739,7 +763,7 @@ export class FacebookScraper extends SiteScraper {
       "Facebook extraction boundary stats"
     );
 
-    return boundedRawPosts.map((post): NormalizedItem => {
+    return boundedFilteredPosts.map((post): NormalizedItem => {
       const cleanedText = cleanFacebookPostText(post.text || "", post.author || undefined);
       const postedAt = post.time ? (parseTimestamp(post.time) || new Date()) : new Date();
 

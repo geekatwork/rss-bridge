@@ -20,6 +20,11 @@ describe("core/utils", () => {
     expect(output).toBe("https://example.com/path/?id=1");
   });
 
+  it("canonicalizeUrl can preserve hash fragments when requested", () => {
+    const input = "https://www.wagneraustralia.com.au/mothers-day-2026/#";
+    expect(canonicalizeUrl(input, { preserveHash: true })).toBe("https://www.wagneraustralia.com.au/mothers-day-2026/#");
+  });
+
   it("canonicalizeUrl returns original string for invalid URL", () => {
     const input = "not-a-valid-url";
     expect(canonicalizeUrl(input)).toBe(input);

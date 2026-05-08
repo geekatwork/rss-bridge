@@ -13,4 +13,5 @@ export interface GroupConfig {
   siteId?: string;
   name: string;
   url: string;
+  schedule?: string;
 }

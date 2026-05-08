@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
+    "dry-run:competitions-nz": "tsx src/dryRunCompetitionsNz.ts",
     "prune": "tsx src/prune.ts",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",

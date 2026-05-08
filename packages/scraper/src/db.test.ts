@@ -119,6 +119,39 @@ describe("scraper db", () => {
     ]);
   });
 
+  it("preserves external hash fragments when persisting outbound links", async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1 });
+
+    const items: NormalizedItem[] = [
+      {
+        sourceId: "item-2",
+        sourceSite: "competitions-nz",
+        title: "Wagner",
+        contentText: null,
+        contentHtml: null,
+        authorName: null,
+        link: "https://www.wagneraustralia.com.au/mothers-day-2026/#",
+        mediaUrls: [],
+        publishedAt: new Date("2026-02-01T00:00:00.000Z"),
+      },
+    ];
+
+    await upsertItems(12, items);
+
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO posts"), [
+      12,
+      "item-2",
+      null,
+      null,
+      null,
+      "https://www.wagneraustralia.com.au/mothers-day-2026/#",
+      JSON.stringify([]),
+      new Date("2026-02-01T00:00:00.000Z"),
+    ]);
+  });
+
   it("skips insert when a canonicalized link already exists on another row", async () => {
     queryMock
       .mockResolvedValueOnce({

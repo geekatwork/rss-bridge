@@ -7,6 +7,7 @@
  */
 
 import { ExampleScraper } from "./ExampleScraper.js";
+import { CompetitionsNzScraper } from "./competitions-nz/index.js";
 import { FacebookScraper } from "./facebook/index.js";
 import { RedditScraper } from "./reddit/index.js";
 import { globalRegistry } from "../core/index.js";
@@ -16,6 +17,7 @@ import { globalRegistry } from "../core/index.js";
  * Call this once at application startup.
  */
 export function registerAllScrapers(): void {
+  globalRegistry.register("competitions-nz", CompetitionsNzScraper);
   globalRegistry.register("facebook", FacebookScraper);
   globalRegistry.register("reddit", RedditScraper);
   globalRegistry.register("example-site", ExampleScraper);
@@ -24,5 +26,6 @@ export function registerAllScrapers(): void {
 }
 
 export { ExampleScraper };
+export { CompetitionsNzScraper } from "./competitions-nz/index.js";
 export { FacebookScraper } from "./facebook/index.js";
 export { RedditScraper } from "./reddit/index.js";

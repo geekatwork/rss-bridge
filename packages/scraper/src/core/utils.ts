@@ -10,18 +10,22 @@ export function computeContentHash(item: NormalizedItem): string {
   return crypto.createHash("sha256").update(key).digest("hex");
 }
 
+interface CanonicalizeUrlOptions {
+  preserveHash?: boolean;
+}
+
 /**
  * Canonicalize a URL: remove tracking params, fragment, normalize scheme/host.
  * Example: https://instagram.com/p/ABC?fbclid=... → https://instagram.com/p/ABC
  */
-export function canonicalizeUrl(urlString: string): string {
+export function canonicalizeUrl(urlString: string, options: CanonicalizeUrlOptions = {}): string {
   try {
     const url = new URL(urlString);
     // Remove common tracking params
     const paramsToRemove = ["fbclid", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"];
     paramsToRemove.forEach((p) => url.searchParams.delete(p));
-    // Reconstruct without fragment
-    return `${url.origin}${url.pathname}${url.search}`.replace(/\/$/, "");
+    const hash = options.preserveHash ? (url.hash || (urlString.endsWith("#") ? "#" : "")) : "";
+    return `${url.origin}${url.pathname}${url.search}${hash}`.replace(/\/$/, "");
   } catch {
     return urlString;
   }

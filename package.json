@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "dry-run:competitions-nz": "npm run -w packages/scraper dry-run:competitions-nz",
     "dump:facebook-snapshots": "bash scripts/dump-facebook-group-snapshots.sh",
     "dump:facebook-unresolved": "bash scripts/dump-facebook-unresolved.sh",
     "review:facebook-unresolved": "node scripts/render-facebook-unresolved-review.mjs",

@@ -209,6 +209,32 @@ describe("scraper index startup", () => {
     expect(scheduleMock).toHaveBeenCalledWith("*/15 * * * *", expect.any(Function));
   });
 
+  it("runs competitions-nz on daily schedule while others use default schedule", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        siteId: "facebook",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+      {
+        groupId: "comp-nz",
+        siteId: "competitions-nz",
+        name: "Competitions NZ",
+        url: "https://www.competitions.co.nz/",
+      },
+    ]);
+    process.env.SCRAPE_SCHEDULE = "0 * * * *";
+    process.env.COMPETITIONS_NZ_SCHEDULE = "0 7 * * *";
+
+    await import("./index.js");
+    await flush();
+
+    expect(scheduleMock).toHaveBeenCalledWith("0 * * * *", expect.any(Function));
+    expect(scheduleMock).toHaveBeenCalledWith("0 7 * * *", expect.any(Function));
+    expect(scheduleMock).toHaveBeenCalledWith("0 3 * * *", expect.any(Function));
+  });
+
   it("passes DB boundary marker to facebook scraper config", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       {

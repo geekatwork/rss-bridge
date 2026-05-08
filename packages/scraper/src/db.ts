@@ -44,7 +44,14 @@ interface PgErrorLike {
 function normalizeLink(link: string | null | undefined): string | null {
   const trimmed = link?.trim();
   if (!trimmed) return null;
-  return canonicalizeUrl(trimmed);
+
+  try {
+    const parsed = new URL(trimmed);
+    const preserveHash = parsed.hostname !== "www.competitions.co.nz" && parsed.hostname !== "competitions.co.nz";
+    return canonicalizeUrl(trimmed, { preserveHash });
+  } catch {
+    return canonicalizeUrl(trimmed);
+  }
 }
 
 async function persistPost(groupId: number, post: PersistablePost): Promise<number> {

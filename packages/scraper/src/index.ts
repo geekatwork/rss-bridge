@@ -13,6 +13,7 @@ interface GroupConfigInput {
   sourceId?: string;
   id?: string;
   siteId?: string;
+  schedule?: string;
   name: string;
   url: string;
 }
@@ -48,7 +49,21 @@ function loadGroups(): GroupConfig[] {
     siteId: group.siteId || inferSiteIdFromUrl(group.url),
     name: group.name,
     url: group.url,
+    schedule: group.schedule,
   }));
+}
+
+function getGroupSchedule(group: GroupConfig, defaultSchedule: string): string {
+  if (group.schedule) {
+    return group.schedule;
+  }
+
+  const siteId = group.siteId || inferSiteIdFromUrl(group.url);
+  if (siteId === "competitions-nz") {
+    return process.env.COMPETITIONS_NZ_SCHEDULE || "0 7 * * *";
+  }
+
+  return defaultSchedule;
 }
 
 function getJitteredDelay(baseMs: number, jitterFraction = 0.3): number {
@@ -74,6 +89,8 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
       groupIds: [config.groupId],
       cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
       accessToken: process.env.SOURCE_ACCESS_TOKEN || undefined,
+      competitionsNzUsername: process.env.COMPETITIONS_NZ_USERNAME || undefined,
+      competitionsNzPassword: process.env.COMPETITIONS_NZ_PASSWORD || undefined,
       stopAtSourceId: stopAtSourceId ?? undefined,
       ...(siteId === "facebook"
         ? {
@@ -158,28 +175,48 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 }
 
 const groups = loadGroups();
-const schedule = process.env.SCRAPE_SCHEDULE || "0 */2 * * *"; // default: every 2 hours
+const defaultSchedule = process.env.SCRAPE_SCHEDULE || "0 */2 * * *"; // default for groups without explicit schedule
 const pruneSchedule = process.env.PRUNE_SCHEDULE || "0 3 * * *";
 const pruneRetentionDays = parsePositiveInteger(process.env.PRUNE_RETENTION_DAYS, 7);
 
+const groupsBySchedule = new Map<string, GroupConfig[]>();
+for (const group of groups) {
+  const schedule = getGroupSchedule(group, defaultSchedule);
+  const existing = groupsBySchedule.get(schedule);
+  if (existing) {
+    existing.push(group);
+  } else {
+    groupsBySchedule.set(schedule, [group]);
+  }
+}
+
 console.log(`Scraper starting with ${groups.length} group(s)`);
-console.log(`Schedule: ${schedule}`);
+console.log(`Default schedule: ${defaultSchedule}`);
 console.log(`Prune schedule: ${pruneSchedule} (Facebook groups older than ${pruneRetentionDays} day(s))`);
 console.log(`Groups: ${groups.map((g) => g.name).join(", ")}`);
+console.log(
+  `Group schedules: ${Array.from(groupsBySchedule.entries())
+    .map(([schedule, scheduledGroups]) => `${schedule} -> [${scheduledGroups.map((g) => g.name).join(", ")}]`)
+    .join("; ")}`
+);
 
 // Run once immediately on startup
 triggerRun(groups, "initial").then(() => {
   console.log("Initial scrape complete. Scheduling future runs...");
 });
 
-cron.schedule(schedule, () => {
-  // Add random jitter before starting (0-10 minutes)
-  const jitterMs = Math.random() * 10 * 60 * 1000;
-  console.log(`[${new Date().toISOString()}] Scheduled run triggered, waiting ${Math.round(jitterMs / 1000)}s jitter...`);
-  setTimeout(() => {
-    void triggerRun(groups, "scheduled");
-  }, jitterMs);
-});
+for (const [schedule, scheduledGroups] of groupsBySchedule.entries()) {
+  cron.schedule(schedule, () => {
+    // Add random jitter before starting (0-10 minutes)
+    const jitterMs = Math.random() * 10 * 60 * 1000;
+    console.log(
+      `[${new Date().toISOString()}] Scheduled run triggered for ${scheduledGroups.length} group(s) on ${schedule}, waiting ${Math.round(jitterMs / 1000)}s jitter...`
+    );
+    setTimeout(() => {
+      void triggerRun(scheduledGroups, "scheduled");
+    }, jitterMs);
+  });
+}
 
 cron.schedule(pruneSchedule, () => {
   void triggerPrune(pruneRetentionDays);

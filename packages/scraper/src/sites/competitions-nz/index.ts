@@ -1,0 +1,1 @@
+export { CompetitionsNzScraper } from "./CompetitionsNzScraper.js";

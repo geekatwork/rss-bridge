@@ -746,7 +746,12 @@ export class FacebookScraper extends SiteScraper {
     const markerIndex = stopAtSourceId
       ? filteredRawPosts.findIndex((post) => post.id === stopAtSourceId)
       : -1;
-    const boundedFilteredPosts = markerIndex >= 0
+    const minimumReliableMarkerIndex = Math.max(
+      1,
+      Number(this.config.options.boundaryMinimumMarkerIndex ?? 5),
+    );
+    const markerUsable = markerIndex >= minimumReliableMarkerIndex;
+    const boundedFilteredPosts = markerUsable
       ? filteredRawPosts.slice(0, markerIndex)
       : filteredRawPosts.slice(0, boundaryFallbackLimit);
 
@@ -757,8 +762,11 @@ export class FacebookScraper extends SiteScraper {
         filteredCount: filteredRawPosts.length,
         boundedCount: boundedFilteredPosts.length,
         boundaryFallbackLimit,
+        boundaryMinimumMarkerIndex: minimumReliableMarkerIndex,
         stopAtSourceId: stopAtSourceId || null,
         markerFound: markerIndex >= 0,
+        markerIndex,
+        markerUsable,
       },
       "Facebook extraction boundary stats"
     );

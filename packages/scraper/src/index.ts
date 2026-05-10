@@ -57,12 +57,6 @@ function getGroupSchedule(group: GroupConfig, defaultSchedule: string): string {
   if (group.schedule) {
     return group.schedule;
   }
-
-  const siteId = group.siteId || inferSiteIdFromUrl(group.url);
-  if (siteId === "competitions-nz") {
-    return process.env.COMPETITIONS_NZ_SCHEDULE || "0 7 * * *";
-  }
-
   return defaultSchedule;
 }
 
@@ -88,7 +82,6 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
     options: {
       groupIds: [config.groupId],
       cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
-      accessToken: process.env.SOURCE_ACCESS_TOKEN || undefined,
       competitionsNzUsername: process.env.COMPETITIONS_NZ_USERNAME || undefined,
       competitionsNzPassword: process.env.COMPETITIONS_NZ_PASSWORD || undefined,
       stopAtSourceId: stopAtSourceId ?? undefined,

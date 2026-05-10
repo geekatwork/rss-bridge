@@ -106,7 +106,6 @@ Example:
 
 - `SCRAPE_SCHEDULE` (cron, default `0 */2 * * *`)
 - `SOURCE_COOKIE_FILE` (optional; passed to site scraper)
-- `SOURCE_ACCESS_TOKEN` (optional; passed to site scraper)
 - `PUPPETEER_EXECUTABLE_PATH` (optional)
 
 ### Cookie file layout

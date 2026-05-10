@@ -26,7 +26,7 @@ ENV HOME=/home/appuser
 WORKDIR /app
 
 COPY packages/scraper/package.json ./
-RUN npm install --omit=dev
+RUN npm install
 
 COPY --from=build /app/dist ./dist
 

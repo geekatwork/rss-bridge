@@ -6,6 +6,7 @@ dist/
 *.log
 cookies/**/*.json
 !cookies/facebook/fb_cookies.example.json
+!cookies/competitions-nz/cookies.example.json
 .vscode/*
 TODO.md
 packages/scraper/src/sites/facebook/__fixtures__/

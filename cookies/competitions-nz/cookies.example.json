@@ -1,0 +1,38 @@
+[
+  {
+    "name": "_ga",
+    "value": "GA1.1.XXXXXXXXX.XXXXXXXXX",
+    "domain": ".competitions.co.nz",
+    "path": "/"
+  },
+  {
+    "name": "g_state",
+    "value": "{...}",
+    "domain": ".competitions.co.nz",
+    "path": "/"
+  },
+  {
+    "name": "LOGGEDIN",
+    "value": "true",
+    "domain": ".competitions.co.nz",
+    "path": "/"
+  },
+  {
+    "name": "USERID",
+    "value": "YOUR_USERID_HERE",
+    "domain": ".competitions.co.nz",
+    "path": "/"
+  },
+  {
+    "name": "_ga_BKN1NNSFJM",
+    "value": "GS2.1.s1778367449$o13$g0$t1778367449$j60$l0$h0",
+    "domain": ".competitions.co.nz",
+    "path": "/"
+  },
+  {
+    "name": "ph_phc_onLbq4ckyK8BVEaU3MvnFAnlHuXM44AgQu0InuwqOnQ_posthog",
+    "value": "{...}",
+    "domain": ".competitions.co.nz",
+    "path": "/"
+  }
+]

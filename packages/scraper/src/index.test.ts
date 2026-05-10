@@ -61,7 +61,6 @@ describe("scraper index startup", () => {
     delete process.env.PRUNE_SCHEDULE;
     delete process.env.PRUNE_RETENTION_DAYS;
     delete process.env.SOURCE_COOKIE_FILE;
-    delete process.env.SOURCE_ACCESS_TOKEN;
 
     vi.spyOn(global, "setTimeout").mockImplementation((cb: (...args: any[]) => void) => {
       cb();
@@ -209,7 +208,7 @@ describe("scraper index startup", () => {
     expect(scheduleMock).toHaveBeenCalledWith("*/15 * * * *", expect.any(Function));
   });
 
-  it("runs competitions-nz on daily schedule while others use default schedule", async () => {
+  it("runs competitions-nz on default schedule when no per-group schedule is set", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       {
         groupId: "12345",
@@ -225,13 +224,11 @@ describe("scraper index startup", () => {
       },
     ]);
     process.env.SCRAPE_SCHEDULE = "0 * * * *";
-    process.env.COMPETITIONS_NZ_SCHEDULE = "0 7 * * *";
 
     await import("./index.js");
     await flush();
 
     expect(scheduleMock).toHaveBeenCalledWith("0 * * * *", expect.any(Function));
-    expect(scheduleMock).toHaveBeenCalledWith("0 7 * * *", expect.any(Function));
     expect(scheduleMock).toHaveBeenCalledWith("0 3 * * *", expect.any(Function));
   });
 

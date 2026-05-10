@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "fs";
 import type { ElementHandle, Page } from "puppeteer";
 import { canonicalizeUrl, SiteScraper, type NormalizedItem, type ScraperContext } from "../../core/index.js";
 import { textToParagraphHtml } from "../../core/utils.js";
@@ -31,6 +32,18 @@ interface CompetitionsNzExtractResult {
   cards: CompetitionsNzRawCard[];
   currentUrl: string;
   paginationLinks: CompetitionsNzPaginationLink[];
+}
+
+interface CompetitionsNzCookieEntry {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+  expires?: number;
+  expirationDate?: number;
 }
 
 function dedupeStrings(values: Array<string | null | undefined>): string[] {
@@ -249,6 +262,80 @@ export class CompetitionsNzScraper extends SiteScraper {
     throw new Error(`Expected one of selectors: ${selectors.join(", ")}`);
   }
 
+  private getCookiePathCandidates(): string[] {
+    const configuredCookiePath = this.config.options.cookieFile as string | undefined;
+    if (configuredCookiePath?.trim()) {
+      return [configuredCookiePath.trim()];
+    }
+
+    return [
+      "/app/cookies/competitions-nz/cookies.json",
+      "/app/cookies/sites/competitions-nz/cookies.json",
+    ];
+  }
+
+  private async loadCookies(context: ScraperContext): Promise<void> {
+    if (!this.page) throw new Error("Page not initialized");
+
+    const cookiePathCandidates = this.getCookiePathCandidates();
+    const cookiePath = cookiePathCandidates.find((path) => existsSync(path));
+    if (!cookiePath) {
+      context.logger.warn({ cookiePathCandidates }, "Competitions NZ cookie file not found");
+      return;
+    }
+
+    try {
+      const raw = readFileSync(cookiePath, "utf-8");
+      const cookies = JSON.parse(raw) as CompetitionsNzCookieEntry[];
+      if (!Array.isArray(cookies) || cookies.length === 0) {
+        context.logger.warn({ cookiePath }, "Competitions NZ cookie file is empty or invalid");
+        return;
+      }
+
+      const normalizedCookies = cookies
+        .filter((cookie) => cookie.name && cookie.value)
+        .map((cookie) => ({
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain || ".competitions.co.nz",
+          path: cookie.path || "/",
+          httpOnly: cookie.httpOnly,
+          secure: cookie.secure,
+          sameSite: cookie.sameSite,
+          expires: cookie.expires ?? cookie.expirationDate,
+        }));
+
+      if (normalizedCookies.length === 0) {
+        context.logger.warn({ cookiePath }, "Competitions NZ cookie file did not contain usable cookies");
+        return;
+      }
+
+      await this.page.setCookie(...normalizedCookies);
+      context.logger.info({ count: normalizedCookies.length, cookiePath }, "Loaded Competitions NZ cookies");
+    } catch (error) {
+      context.logger.warn({ cookiePath, error: String(error) }, "Failed to load Competitions NZ cookies");
+    }
+  }
+
+  private async isAuthenticated(): Promise<boolean> {
+    if (!this.page) throw new Error("Page not initialized");
+
+    return this.page.evaluate(() => {
+      const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+      const visibleTexts = Array.from(document.querySelectorAll<HTMLElement>("a, button, [role='button']"))
+        .filter((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        })
+        .map((node) => normalize(node.textContent || ""))
+        .filter(Boolean);
+
+      const hasGuestCtas = visibleTexts.includes("sign in") && visibleTexts.includes("join free");
+      const hasSortControl = visibleTexts.some((text) => text === "newest" || text === "popular" || text === "ending soon" || text === "prize value");
+      return hasSortControl || !hasGuestCtas;
+    });
+  }
+
   private async findClickableByText(pattern: RegExp): Promise<ElementHandle<Element> | null> {
     if (!this.page) throw new Error("Page not initialized");
 
@@ -390,21 +477,54 @@ export class CompetitionsNzScraper extends SiteScraper {
       throw new Error("Could not find the Competitions NZ sign-in button");
     }
 
+    const loginResponses: Array<{ success?: boolean; error?: string }> = [];
+    const responseListener = async (response: { url(): string; json(): Promise<unknown> }) => {
+      if (!response.url().includes("/api/auth/process-login/")) {
+        return;
+      }
+
+      try {
+        const payload = await response.json() as { success?: boolean; error?: string };
+        loginResponses.push(payload);
+      } catch {
+        loginResponses.push({ success: false, error: "Unable to parse login response" });
+      }
+    };
+
+    this.page.on("response", responseListener);
     await Promise.all([
       this.page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 }).catch(() => null),
       signInButton.click(),
     ]);
+    await this.page.waitForNetworkIdle({ idleTime: 1000, timeout: 15000 }).catch(() => null);
+    this.page.off("response", responseListener);
     await signInButton.dispose();
+
+    const loginError = loginResponses.find((response) => response.success === false)?.error;
+    if (loginError) {
+      throw new Error(`Competitions NZ login failed: ${loginError}`);
+    }
   }
 
   async fetchListing(context: ScraperContext): Promise<void> {
     if (!this.page) throw new Error("Page not initialized");
     if (this.listingLoaded) return;
 
-    await this.login(context);
-
     const sourceUrl = (this.config.options.sourceUrl as string | undefined) || `${COMPETITIONS_NZ_BASE_URL}/`;
+    await this.loadCookies(context);
     await this.page.goto(sourceUrl, { waitUntil: "networkidle2", timeout: 60000 });
+
+    if (!(await this.isAuthenticated())) {
+      await this.login(context);
+      await this.page.goto(sourceUrl, { waitUntil: "networkidle2", timeout: 60000 });
+    }
+
+    if (!(await this.isAuthenticated())) {
+      throw new Error(
+        "Competitions NZ authentication failed; the site is still serving the guest view. Provide a valid cookie file via SOURCE_COOKIE_FILE or refresh the saved cookies."
+      );
+    }
+
     await this.page.waitForSelector(COMPETITIONS_CARD_SELECTOR, { timeout: 60000 });
     await this.ensureNewestSort(context);
     await this.page.waitForSelector(COMPETITIONS_CARD_SELECTOR, { timeout: 60000 });

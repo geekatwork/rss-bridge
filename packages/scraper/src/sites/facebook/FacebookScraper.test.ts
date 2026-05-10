@@ -151,12 +151,26 @@ describe("Facebook post content cleaning logic", () => {
     expect(cleaned).toBe("GIVEAWAY");
   });
 
+  it("removes mobile UI boilerplate fragments from content", () => {
+    const raw = "All-star contributor WIN NOW... See more Write a public comment…";
+    const cleaned = cleanFacebookPostText(raw);
+    expect(cleaned).toBe("WIN NOW...");
+  });
+
+  it("trims all-star preamble so content starts at source label", () => {
+    const raw = "All-star contributor          ‎‎5h‎󰞋‎󱙷‎󱐆All-star contributor󳄫Canvasland‎5h‎󰞋‎󱙷‎** Give Away **... See more1󰍸1󰍺";
+    const cleaned = cleanFacebookPostText(raw);
+    expect(cleaned.startsWith("Canvasland")).toBe(true);
+  });
+
   it("detects pseudo-post UI fragments", () => {
     expect(isLikelyFacebookNonPostContent("Most relevantSORT")).toBe(true);
     expect(isLikelyFacebookNonPostContent("Write something... Photo Feeling")).toBe(true);
     expect(isLikelyFacebookNonPostContent("VideosAnnouncementsEvents")).toBe(true);
     expect(isLikelyFacebookNonPostContent("Facebook Competitions NZ Public group·12Kmembers Joined Invite")).toBe(true);
     expect(isLikelyFacebookNonPostContent("Let's welcome our new members: ...")).toBe(true);
+    expect(isLikelyFacebookNonPostContent("About this group Instagram Contests")).toBe(true);
+    expect(isLikelyFacebookNonPostContent("There's more to see Get more photos, videos and updates from this group. Log in Create new account")).toBe(true);
   });
 
   it("does not flag normal giveaway post text as pseudo-post", () => {

@@ -16,7 +16,16 @@ import type { NormalizedPost } from "../../types.js";
 
 // --- MAIN EXPORTS ---
 export function cleanFacebookPostText(raw: string, author?: string): string {
-  let lines = raw.split(/\r?\n/);
+  // Strip common mobile UI fragments before line-based cleanup.
+  let normalizedRaw = raw
+    .replace(/Write a public comment\s*…?/gi, " ")
+    .replace(/See more\s*…?/gi, " ")
+    .replace(/All-star contributor/gi, " ")
+    .replace(/\bAdmin\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  let lines = normalizedRaw.split(/\r?\n/);
   const namesToStrip: string[] = [];
   if (author) namesToStrip.push(author);
 
@@ -36,6 +45,11 @@ export function cleanFacebookPostText(raw: string, author?: string): string {
       // Remove invisible/special chars for timestamp check
       const stripped = line.replace(invisibleOrSpecial, "").trim();
       if (timestampOnly.test(stripped)) return false;
+      if (/^write a public comment\s*…?$/i.test(stripped)) return false;
+      if (/^see more\s*…?$/i.test(stripped)) return false;
+      if (/^(\d+\s*)?(comments?|shares?|views?)$/i.test(stripped)) return false;
+      if (/^all-star contributor$/i.test(stripped)) return false;
+      if (/^admin$/i.test(stripped)) return false;
       // skip if only special unicode (after trimming)
       if (/^[󰞋󱙷\uE000\uF8FF]+$/u.test(line)) return false;
       return true;
@@ -44,6 +58,13 @@ export function cleanFacebookPostText(raw: string, author?: string): string {
   let t = lines.join("\n");
   // Use removeSpecialUnicode on the whole text
   t = removeSpecialUnicode(t).trim();
+  t = t.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, "").trim();
+  // If a feed item starts with the all-star preamble, keep only content after the source marker.
+  t = t.replace(/^all[^\p{L}\p{N}]*star contributor[\s\S]*?󳄫\s*/iu, "").trim();
+  // Some mobile payloads keep timestamp inline (e.g. "3h ...") after normalization.
+  while (/^([0-9]{1,2}\s*[hmwd]|yesterday|just now)\b[^\p{L}\p{N}]*/iu.test(t)) {
+    t = t.replace(/^([0-9]{1,2}\s*[hmwd]|yesterday|just now)\b[^\p{L}\p{N}]*/iu, "").trim();
+  }
   t = t.replace(/^[ \t\n\r]+/, "");
   t = t
     .replace(/\.{3}\s*See more\s*$/i, "...")
@@ -63,6 +84,10 @@ export function isLikelyFacebookNonPostContent(text: string): boolean {
   if (normalized === "videosannouncementsevents") return true;
   if (/publicgroup.*members.*joined.*invite/.test(normalized)) return true;
   if (normalized.startsWith("letswelcomeournewmembers")) return true;
+  if (normalized.startsWith("aboutthisgroup")) return true;
+  if (normalized.startsWith("theresmoretoseegetmorephotosvideosandupdatesfromthisgroup")) return true;
+  if (normalized.includes("logincreatenewaccount")) return true;
+  if (/^\d+(comments?|shares?|views?)$/.test(normalized)) return true;
 
   return false;
 }

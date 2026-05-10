@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:25-alpine AS build
 
 RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont
 
@@ -11,7 +11,7 @@ COPY packages/scraper/tsconfig.json ./
 COPY packages/scraper/src/ ./src/
 RUN npx tsc
 
-FROM node:20-alpine
+FROM node:25-alpine
 
 RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont
 

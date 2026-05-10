@@ -238,6 +238,7 @@ export class CompetitionsNzScraper extends SiteScraper {
   private usePagingFallback = true;
   private nextPageUrl: string | null = null;
   private seenSourceIds = new Set<string>();
+  private hitBoundary = false;
 
   canHandle(source: string): boolean {
     return source === "competitions-nz" || source.includes("competitions.co.nz");
@@ -449,61 +450,13 @@ export class CompetitionsNzScraper extends SiteScraper {
   private async login(context: ScraperContext): Promise<void> {
     if (!this.page) throw new Error("Page not initialized");
 
-    const username = this.config.options.competitionsNzUsername as string | undefined;
-    const password = this.config.options.competitionsNzPassword as string | undefined;
-    if (!username || !password) {
-      throw new Error("COMPETITIONS_NZ_USERNAME and COMPETITIONS_NZ_PASSWORD are required");
-    }
+    throw new Error(
+      "Competitions NZ authentication failed; cookies are required. " +
+      "Provide a valid cookie file via SOURCE_COOKIE_FILE or refresh the saved cookies. " +
+      "(Headless login is not supported due to reCAPTCHA)"
+    );
 
-    await this.page.goto(COMPETITIONS_NZ_LOGIN_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    const emailSelector = await this.firstAvailableSelector([
-      "input[placeholder='your@email.com']",
-      "input[type='email']",
-      "input[name='email']",
-    ]);
-    const passwordSelector = await this.firstAvailableSelector([
-      "input[placeholder='Enter your password']",
-      "input[type='password']",
-      "input[name='password']",
-    ]);
 
-    await this.page.click(emailSelector, { clickCount: 3 });
-    await this.page.type(emailSelector, username, { delay: 20 });
-    await this.page.click(passwordSelector, { clickCount: 3 });
-    await this.page.type(passwordSelector, password, { delay: 20 });
-
-    const signInButton = await this.findClickableByText(/sign in/i);
-    if (!signInButton) {
-      throw new Error("Could not find the Competitions NZ sign-in button");
-    }
-
-    const loginResponses: Array<{ success?: boolean; error?: string }> = [];
-    const responseListener = async (response: { url(): string; json(): Promise<unknown> }) => {
-      if (!response.url().includes("/api/auth/process-login/")) {
-        return;
-      }
-
-      try {
-        const payload = await response.json() as { success?: boolean; error?: string };
-        loginResponses.push(payload);
-      } catch {
-        loginResponses.push({ success: false, error: "Unable to parse login response" });
-      }
-    };
-
-    this.page.on("response", responseListener);
-    await Promise.all([
-      this.page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 }).catch(() => null),
-      signInButton.click(),
-    ]);
-    await this.page.waitForNetworkIdle({ idleTime: 1000, timeout: 15000 }).catch(() => null);
-    this.page.off("response", responseListener);
-    await signInButton.dispose();
-
-    const loginError = loginResponses.find((response) => response.success === false)?.error;
-    if (loginError) {
-      throw new Error(`Competitions NZ login failed: ${loginError}`);
-    }
   }
 
   async fetchListing(context: ScraperContext): Promise<void> {
@@ -621,15 +574,33 @@ export class CompetitionsNzScraper extends SiteScraper {
       ? selectCompetitionsNzNextPageUrl(extraction.paginationLinks, extraction.currentUrl)
       : null;
 
+    const stopAtSourceId = this.config.options.stopAtSourceId as string | undefined;
+
     const dedupedItems = items.filter((item) => {
+      // Skip if we've already seen this item in this scrape session
       if (this.seenSourceIds.has(item.sourceId)) {
         return false;
       }
+
+      // Stop at boundary marker: exclude the marker itself and all items after it
+      if (stopAtSourceId && item.sourceId === stopAtSourceId) {
+        this.hitBoundary = true;
+        return false;
+      }
+
+      // Skip all remaining items if we've hit the boundary
+      if (this.hitBoundary) {
+        return false;
+      }
+
       this.seenSourceIds.add(item.sourceId);
       return true;
     });
 
-    context.logger.info({ count: dedupedItems.length, nextPageUrl: this.nextPageUrl }, "Extracted Competitions NZ items");
+    context.logger.info(
+      { count: dedupedItems.length, nextPageUrl: this.nextPageUrl, boundaryHit: this.hitBoundary },
+      "Extracted Competitions NZ items"
+    );
     return dedupedItems;
   }
 
@@ -677,6 +648,7 @@ export class CompetitionsNzScraper extends SiteScraper {
     this.usePagingFallback = false;
     this.nextPageUrl = null;
     this.seenSourceIds.clear();
+    this.hitBoundary = false;
     context.logger.debug({ site: this.config.siteId }, "Competitions NZ scraper shutdown complete");
   }
 }

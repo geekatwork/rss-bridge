@@ -13,8 +13,6 @@ async function main(): Promise<void> {
       options: {
         sourceUrl: process.env.COMPETITIONS_NZ_SOURCE_URL || "https://www.competitions.co.nz/",
         maxPages: 1,
-        competitionsNzUsername: process.env.COMPETITIONS_NZ_USERNAME || undefined,
-        competitionsNzPassword: process.env.COMPETITIONS_NZ_PASSWORD || undefined,
       },
     });
 

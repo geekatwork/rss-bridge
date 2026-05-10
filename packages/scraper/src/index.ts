@@ -82,8 +82,6 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
     options: {
       groupIds: [config.groupId],
       cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
-      competitionsNzUsername: process.env.COMPETITIONS_NZ_USERNAME || undefined,
-      competitionsNzPassword: process.env.COMPETITIONS_NZ_PASSWORD || undefined,
       stopAtSourceId: stopAtSourceId ?? undefined,
       ...(siteId === "facebook"
         ? {

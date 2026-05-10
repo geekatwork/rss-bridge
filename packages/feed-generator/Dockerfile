@@ -1,4 +1,4 @@
-FROM node:25-alpine AS build
+FROM node:26-alpine AS build
 
 WORKDIR /app
 
@@ -9,12 +9,13 @@ COPY packages/feed-generator/tsconfig.json ./
 COPY packages/feed-generator/src/ ./src/
 RUN npx tsc
 
-FROM node:25-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
 COPY packages/feed-generator/package.json ./
 RUN npm install --omit=dev
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=build /app/dist ./dist
 

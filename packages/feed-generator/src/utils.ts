@@ -21,6 +21,24 @@ export function isLandingOrGroupUrl(link: string, groupUrl: string): boolean {
   }
 }
 
+export function isUnreliableFacebookPhotoLink(link: string): boolean {
+  try {
+    const parsed = new URL(link);
+    const host = parsed.hostname.toLowerCase();
+    if (host !== "www.facebook.com" && host !== "facebook.com" && host !== "m.facebook.com") {
+      return false;
+    }
+
+    const path = parsed.pathname.toLowerCase();
+    const hasFbid = Boolean(parsed.searchParams.get("fbid"));
+    if (!hasFbid) return false;
+
+    return path === "/photo.php" || path === "/photo/" || path === "/photo";
+  } catch {
+    return false;
+  }
+}
+
 export function buildFeedUrl(baseUrl: string, sourceId: string): string {
   const encodedSourceId = encodeURIComponent(sourceId);
   const parsed = new URL(baseUrl);

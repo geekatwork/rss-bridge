@@ -12,6 +12,7 @@ const {
   getPostsByGroupIdMock,
   buildFeedUrlMock,
   isLandingOrGroupUrlMock,
+  isUnreliableFacebookPhotoLinkMock,
 } = vi.hoisted(() => {
   const routeTable: Record<string, (req: any, res: any) => Promise<void> | void> = {};
 
@@ -42,6 +43,7 @@ const {
     getPostsByGroupIdMock: vi.fn(),
     buildFeedUrlMock: vi.fn(),
     isLandingOrGroupUrlMock: vi.fn(),
+    isUnreliableFacebookPhotoLinkMock: vi.fn(),
   };
 });
 
@@ -74,6 +76,7 @@ vi.mock("./db.js", () => ({
 vi.mock("./utils.js", () => ({
   buildFeedUrl: buildFeedUrlMock,
   isLandingOrGroupUrl: isLandingOrGroupUrlMock,
+  isUnreliableFacebookPhotoLink: isUnreliableFacebookPhotoLinkMock,
 }));
 
 import "./index.js";
@@ -238,6 +241,7 @@ describe("feed-generator routes", () => {
 
     buildFeedUrlMock.mockReturnValue("https://host/feed/group-1");
     isLandingOrGroupUrlMock.mockImplementation((link: string) => link === "https://www.facebook.com/");
+    isUnreliableFacebookPhotoLinkMock.mockReturnValue(false);
 
     const req = {
       params: { groupId: "group-1" },

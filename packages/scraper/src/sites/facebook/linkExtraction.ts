@@ -116,7 +116,7 @@ export function extractFacebookLinkFromCandidate(raw: string): FacebookLinkExtra
     if (lowPath.includes("/photo") || lowPath.includes("photo.php")) {
       const fbid = parsed.searchParams.get("fbid") || resolved.match(/[?&]fbid=(\d+)/i)?.[1] || null;
       return {
-        link: fbid ? `${parsed.origin}/photo/?fbid=${fbid}` : `${parsed.origin}${path}`,
+        link: fbid ? `${parsed.origin}/photo.php?fbid=${fbid}` : `${parsed.origin}${path}`,
         postId: fbid,
       };
     }
@@ -251,7 +251,7 @@ export function extractFacebookPostLinkFromCandidates(candidates: string[]): { l
  * For album/multi-photo posts, Facebook CDN image URLs embed the parent photo ID in the
  * filename segment (e.g. `v/t39.30808-6/<digits>_<photoId>_<digits>_n.jpg`).
  * We scan all image URLs, extract the embedded fbid, and return the first
- * `photo/?fbid=<id>` we can construct from them.
+ * `photo.php?fbid=<id>` we can construct from them.
  * Returns null if no suitable ID is found.
  */
 export function extractFacebookAlbumLinkFromImageUrls(imageUrls: string[]): string | null {
@@ -267,7 +267,7 @@ export function extractFacebookAlbumLinkFromImageUrls(imageUrls: string[]): stri
       try {
         const normalized = (BigInt(filenameMatch[2]) - 6000000n).toString();
         if (/^\d{10,}$/.test(normalized)) {
-          return `https://www.facebook.com/photo/?fbid=${normalized}`;
+          return `https://www.facebook.com/photo.php?fbid=${normalized}`;
         }
       } catch {
         // ignore invalid bigint conversion and continue fallbacks
@@ -277,7 +277,7 @@ export function extractFacebookAlbumLinkFromImageUrls(imageUrls: string[]): stri
     // Fallback: fbid embedded in stp query param (e.g. s_fbid=<id>)
     const stpFbidMatch = url.match(/[?&](?:fbid|s_fbid)=(\d{10,})/i);
     if (stpFbidMatch) {
-      return `https://www.facebook.com/photo/?fbid=${stpFbidMatch[1]}`;
+      return `https://www.facebook.com/photo.php?fbid=${stpFbidMatch[1]}`;
     }
   }
   return null;

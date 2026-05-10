@@ -13,7 +13,7 @@ describe("Facebook real-world link extraction", () => {
     );
 
     expect(actual).toEqual({
-      link: "https://www.facebook.com/photo/?fbid=1508944807910427",
+      link: "https://www.facebook.com/photo.php?fbid=1508944807910427",
       postId: "1508944807910427",
     });
   });
@@ -27,11 +27,11 @@ describe("Facebook real-world link extraction", () => {
     );
 
     expect(first).toEqual({
-      link: "https://www.facebook.com/photo/?fbid=1418857496936537",
+      link: "https://www.facebook.com/photo.php?fbid=1418857496936537",
       postId: "1418857496936537",
     });
     expect(second).toEqual({
-      link: "https://www.facebook.com/photo/?fbid=1553950546735094",
+      link: "https://www.facebook.com/photo.php?fbid=1553950546735094",
       postId: "1553950546735094",
     });
   });
@@ -145,7 +145,7 @@ describe("Facebook real-world link extraction", () => {
     const actual = extractFacebookLinkFromHtmlBlob(html);
 
     expect(actual).toEqual({
-      link: "https://www.facebook.com/photo/?fbid=1418857496936537",
+      link: "https://www.facebook.com/photo.php?fbid=1418857496936537",
       postId: "1418857496936537",
     });
   });
@@ -193,7 +193,7 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "/pages/SomePage/123456789",
     ];
     expect(extractFacebookPostLinkFromCandidates(hrefs).link).toBe(
-      "https://www.facebook.com/photo/?fbid=1584469407021487",
+      "https://www.facebook.com/photo.php?fbid=1584469407021487",
     );
   });
 
@@ -235,7 +235,7 @@ describe("extractFacebookPostLinkFromCandidates", () => {
       "/SomePage",
     ];
     expect(extractFacebookPostLinkFromCandidates(hrefs).link).toBe(
-      "https://www.facebook.com/photo/?fbid=9999999999999",
+      "https://www.facebook.com/photo.php?fbid=9999999999999",
     );
   });
 
@@ -272,7 +272,7 @@ describe("extractFacebookAlbumLinkFromImageUrls", () => {
       "https://scontent.example.com/v/t39.30808-6/12345_122229060350121725_67890_n.jpg?...",
     ];
     expect(extractFacebookAlbumLinkFromImageUrls(urls)).toBe(
-      "https://www.facebook.com/photo/?fbid=122229060344121725",
+      "https://www.facebook.com/photo.php?fbid=122229060344121725",
     );
   });
 
@@ -288,7 +288,7 @@ describe("extractFacebookAlbumLinkFromImageUrls", () => {
       "https://scontent.example.com/v/t39.30808-6/img.jpg?fbid=122229060518121725&otherparam=x",
     ];
     expect(extractFacebookAlbumLinkFromImageUrls(urls)).toBe(
-      "https://www.facebook.com/photo/?fbid=122229060518121725",
+      "https://www.facebook.com/photo.php?fbid=122229060518121725",
     );
   });
 

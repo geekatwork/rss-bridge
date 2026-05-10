@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFeedUrl, isLandingOrGroupUrl } from "./utils.js";
+import { buildFeedUrl, isLandingOrGroupUrl, isUnreliableFacebookPhotoLink } from "./utils.js";
 
 describe("feed-generator utils", () => {
   it("flags home/login/checkpoint links on same host", () => {
@@ -88,5 +88,17 @@ describe("feed-generator utils", () => {
     expect(buildFeedUrl("https://example.com", "group-1")).toBe("https://example.com/feed/group-1");
     expect(buildFeedUrl("https://feeds.example.com/base/", "group-1")).toBe("https://feeds.example.com/base/feed/group-1");
     expect(buildFeedUrl("https://example.com", "group/a b")).toBe("https://example.com/feed/group%2Fa%20b");
+  });
+
+  it("flags Facebook photo fbid links as unreliable", () => {
+    expect(isUnreliableFacebookPhotoLink("https://www.facebook.com/photo.php?fbid=1484379963795536")).toBe(true);
+    expect(isUnreliableFacebookPhotoLink("https://www.facebook.com/photo/?fbid=1484379963795536")).toBe(true);
+    expect(isUnreliableFacebookPhotoLink("https://m.facebook.com/photo.php?fbid=1484379963795536")).toBe(true);
+  });
+
+  it("does not flag non-photo or non-facebook links", () => {
+    expect(isUnreliableFacebookPhotoLink("https://www.facebook.com/story.php?story_fbid=1&id=2")).toBe(false);
+    expect(isUnreliableFacebookPhotoLink("https://www.instagram.com/p/abc123/")).toBe(false);
+    expect(isUnreliableFacebookPhotoLink("not-a-url")).toBe(false);
   });
 });

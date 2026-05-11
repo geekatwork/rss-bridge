@@ -288,6 +288,78 @@ export class FacebookScraper extends SiteScraper {
     });
   }
 
+  private async resolveLinkFromDomFallback(
+    context: ScraperContext,
+    item: NormalizedItem,
+    postIndex: number,
+    groupUrl: string,
+  ): Promise<boolean> {
+    if (!this.page) return false;
+
+    const candidateHrefs = await this.page.evaluate((idx: number) => {
+      const screenRoot = document.getElementById("screen-root");
+      const mainDiv = screenRoot?.children[0];
+      if (!mainDiv) return [];
+      let scrollDiv: Element | null = null;
+      for (let i = 0; i < mainDiv.children.length; i++) {
+        const child = mainDiv.children[i];
+        if ((child.textContent || "").trim().length > 200) {
+          scrollDiv = child;
+          break;
+        }
+      }
+      if (!scrollDiv || !scrollDiv.children[idx]) return [];
+      const postEl = scrollDiv.children[idx];
+      if (!postEl) return [];
+
+      const hrefs: string[] = [];
+      const anchors = Array.from(postEl.querySelectorAll("a[href]"));
+      for (const anchor of anchors) {
+        const href = anchor.getAttribute("href");
+        if (href) hrefs.push(href);
+        const lynx = anchor.getAttribute("data-lynx-uri");
+        if (lynx) hrefs.push(lynx);
+        const ajaxify = anchor.getAttribute("ajaxify");
+        if (ajaxify) hrefs.push(ajaxify);
+      }
+      return hrefs;
+    }, postIndex);
+
+    const { link: postLink, multipleInstagramLinks } = extractFacebookPostLinkFromCandidates(candidateHrefs);
+    if (multipleInstagramLinks) {
+      context.logger.warn({ id: item.sourceId, instagramLinks: multipleInstagramLinks }, "Multiple Instagram links in post candidates; picked most frequent");
+    }
+    if (postLink) {
+      item.link = postLink;
+      context.logger.info({ id: item.sourceId, link: postLink }, "Resolved post link from href (shared post fallback)");
+      return true;
+    }
+
+    const albumLink = extractFacebookAlbumLinkFromImageUrls(item.mediaUrls ?? []);
+    if (albumLink) {
+      item.link = albumLink;
+      context.logger.info({ id: item.sourceId, link: albumLink }, "Resolved album photo link from image URLs (fallback)");
+      return true;
+    }
+
+    const pageLink = extractFacebookPageFallbackFromCandidates(candidateHrefs);
+    if (pageLink) {
+      item.link = pageLink;
+      context.logger.info({ id: item.sourceId, link: pageLink }, "Resolved page link from post content (fallback)");
+      return true;
+    }
+
+    const firstImage = extractFirstImageUrl(item.mediaUrls ?? []);
+    if (firstImage) {
+      item.link = firstImage;
+      context.logger.info({ id: item.sourceId, link: firstImage }, "Resolved link from first image URL (fallback)");
+      return true;
+    }
+
+    await this.dumpUnresolvedFixture(item, postIndex, groupUrl);
+    return false;
+  }
+
   canHandle(source: string): boolean {
     // Match Facebook group URLs or explicit "facebook" identifier
     return source === "facebook" || source.startsWith("https://www.facebook.com/groups/");
@@ -1070,6 +1142,7 @@ export class FacebookScraper extends SiteScraper {
 
         if (!clickPos || (clickPos as { noMatch?: boolean }).noMatch) {
           context.logger.info({ id: item.sourceId, postIndex, clickPos }, "resolveLinks: no clickable image found");
+          await this.resolveLinkFromDomFallback(context, item, postIndex, groupUrl);
           continue;
         }
 
@@ -1199,68 +1272,7 @@ export class FacebookScraper extends SiteScraper {
         }
 
         if (!resolved) {
-          // Fallback: extract links from post DOM when media clicks fail (shared/album posts).
-          // Shared posts contain anchors pointing to the original post (photo, permalink, etc.)
-          // that we can extract without relying on image-click navigation.
-          // NOTE: extraction functions run in Node.js, not inside page.evaluate, because they
-          // are not available in the browser context.
-          const candidateHrefs = await this.page.evaluate((idx: number) => {
-            const screenRoot = document.getElementById("screen-root");
-            const mainDiv = screenRoot?.children[0];
-            if (!mainDiv) return [];
-            let scrollDiv: Element | null = null;
-            for (let i = 0; i < mainDiv.children.length; i++) {
-              const child = mainDiv.children[i];
-              if ((child.textContent || "").trim().length > 200) {
-                scrollDiv = child;
-                break;
-              }
-            }
-            if (!scrollDiv || !scrollDiv.children[idx]) return [];
-            const postEl = scrollDiv.children[idx];
-            if (!postEl) return [];
-
-            const hrefs: string[] = [];
-            const anchors = Array.from(postEl.querySelectorAll("a[href]"));
-            for (const anchor of anchors) {
-              const href = anchor.getAttribute("href");
-              if (href) hrefs.push(href);
-              const lynx = anchor.getAttribute("data-lynx-uri");
-              if (lynx) hrefs.push(lynx);
-              const ajaxify = anchor.getAttribute("ajaxify");
-              if (ajaxify) hrefs.push(ajaxify);
-            }
-            return hrefs;
-          }, postIndex);
-
-          const { link: postLink, multipleInstagramLinks } = extractFacebookPostLinkFromCandidates(candidateHrefs);
-          if (multipleInstagramLinks) {
-            context.logger.warn({ id: item.sourceId, instagramLinks: multipleInstagramLinks }, "Multiple Instagram links in post candidates; picked most frequent");
-          }
-          if (postLink) {
-            item.link = postLink;
-            context.logger.info({ id: item.sourceId, link: postLink }, "Resolved post link from href (shared post fallback)");
-          } else {
-            const albumLink = extractFacebookAlbumLinkFromImageUrls(item.mediaUrls ?? []);
-            if (albumLink) {
-              item.link = albumLink;
-              context.logger.info({ id: item.sourceId, link: albumLink }, "Resolved album photo link from image URLs (fallback)");
-            } else {
-            const pageLink = extractFacebookPageFallbackFromCandidates(candidateHrefs);
-            if (pageLink) {
-              item.link = pageLink;
-              context.logger.info({ id: item.sourceId, link: pageLink }, "Resolved page link from post content (fallback)");
-            } else {
-            const firstImage = extractFirstImageUrl(item.mediaUrls ?? []);
-            if (firstImage) {
-              item.link = firstImage;
-              context.logger.info({ id: item.sourceId, link: firstImage }, "Resolved link from first image URL (fallback)");
-            } else {
-              await this.dumpUnresolvedFixture(item, postIndex, groupUrl);
-            }
-          }
-          }
-          }
+          await this.resolveLinkFromDomFallback(context, item, postIndex, groupUrl);
           continue;
         }
 

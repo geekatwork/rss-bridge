@@ -44,6 +44,9 @@ services:
     restart: unless-stopped
     user: "10001:10001"
     environment:
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      XDG_CONFIG_HOME: /tmp/.config
       DATABASE_URL: postgres://${POSTGRES_USER:-rss_bridge}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-rss_bridge}
       SCRAPE_GROUPS: ${SCRAPE_GROUPS}
       SCRAPE_SCHEDULE: ${SCRAPE_SCHEDULE:-0 */2 * * *}

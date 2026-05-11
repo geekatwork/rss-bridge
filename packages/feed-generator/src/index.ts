@@ -1,7 +1,7 @@
 import express from "express";
 import { Feed } from "feed";
 import { getAllGroups, getGroupBySourceId, getPostsByGroupId } from "./db.js";
-import { buildFeedUrl, isLandingOrGroupUrl, isUnreliableFacebookPhotoLink } from "./utils.js";
+import { buildFeedUrl, isLandingOrGroupUrl } from "./utils.js";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3100", 10);
@@ -70,16 +70,16 @@ app.get("/feed/:groupId", async (req, res) => {
       if (postLink && isLandingOrGroupUrl(postLink, group.url)) {
         continue;
       }
-      const safeLink = postLink && !isUnreliableFacebookPhotoLink(postLink)
-        ? postLink
-        : undefined;
+      if (!postLink) {
+        continue;
+      }
 
       feed.addItem({
         title: post.author_name
           ? `${post.author_name}: ${(post.content_text || "").slice(0, 80)}`
           : (post.content_text || "").slice(0, 80),
         id: post.source_post_id,
-        link: safeLink ?? group.url,
+        link: postLink,
         description: post.content_html || post.content_text || "",
         date: post.posted_at,
         author: post.author_name

@@ -15,13 +15,13 @@ describe("feed-generator utils", () => {
   it("flags group-root style links on same host", () => {
     const groupUrl = "https://www.facebook.com/groups/12345";
     expect(isLandingOrGroupUrl("https://www.facebook.com/groups/12345", groupUrl)).toBe(true);
-    expect(isLandingOrGroupUrl("https://www.facebook.com/groups/12345/posts/abc", groupUrl)).toBe(true);
+    expect(isLandingOrGroupUrl("https://www.facebook.com/groups/12345/posts/abc", groupUrl)).toBe(false);
   });
 
   it("matches group links when configured group URL has trailing slash", () => {
     const groupUrl = "https://www.facebook.com/groups/12345/";
     expect(isLandingOrGroupUrl("https://www.facebook.com/groups/12345", groupUrl)).toBe(true);
-    expect(isLandingOrGroupUrl("https://www.facebook.com/groups/12345/posts/abc", groupUrl)).toBe(true);
+    expect(isLandingOrGroupUrl("https://www.facebook.com/groups/12345/posts/abc", groupUrl)).toBe(false);
   });
 
   it("does not flag links on different host", () => {
@@ -53,18 +53,18 @@ describe("feed-generator utils", () => {
       },
       {
         link: "https://www.facebook.com/groups/12345/posts/abc#comment-1",
-        expected: true,
-        note: "group post with fragment",
+        expected: false,
+        note: "group post permalink should remain valid",
       },
       {
         link: "https://WWW.FACEBOOK.COM/groups/12345/posts/abc",
-        expected: true,
-        note: "hostname case-insensitivity",
+        expected: false,
+        note: "hostname case-insensitivity with permalink remains valid",
       },
       {
         link: "https://www.facebook.com/groups/12345-other/posts/abc",
-        expected: true,
-        note: "prefix path still treated as group-like by current matcher",
+        expected: false,
+        note: "prefix path should not be treated as group root",
       },
       {
         link: "https://m.facebook.com/groups/12345/posts/abc",

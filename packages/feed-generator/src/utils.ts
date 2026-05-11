@@ -13,7 +13,7 @@ export function isLandingOrGroupUrl(link: string, groupUrl: string): boolean {
     const normalizePath = (value: string): string => value.replace(/\/+$/, "");
     const parsedPath = normalizePath(parsed.pathname);
     const groupPath = normalizePath(groupParsed.pathname);
-    const isGroupLike = parsed.origin === groupParsed.origin && parsedPath.startsWith(groupPath);
+    const isGroupLike = parsed.origin === groupParsed.origin && parsedPath === groupPath;
 
     return isHomeLike || isGroupLike;
   } catch {

@@ -47,6 +47,7 @@ services:
       HOME: /tmp
       XDG_CACHE_HOME: /tmp/.cache
       XDG_CONFIG_HOME: /tmp/.config
+      SCRAPER_HEALTH_PORT: ${SCRAPER_HEALTH_PORT:-8081}
       DATABASE_URL: postgres://${POSTGRES_USER:-rss_bridge}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-rss_bridge}
       SCRAPE_GROUPS: ${SCRAPE_GROUPS}
       SCRAPE_SCHEDULE: ${SCRAPE_SCHEDULE:-0 */2 * * *}
@@ -62,6 +63,12 @@ services:
       - /home/appuser/.cache
     volumes:
       - ./cookies:/app/cookies:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${SCRAPER_HEALTH_PORT:-8081}/health | grep -q '\"status\":\"ok\"'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     depends_on:
       db:
         condition: service_healthy

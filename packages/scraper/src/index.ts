@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { createServer } from "node:http";
 import { ScrapeEngine } from "./ScrapeEngine.js";
 import {
   ensureGroup,
@@ -16,6 +17,56 @@ interface GroupConfigInput {
   schedule?: string;
   name: string;
   url: string;
+}
+
+class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
+type AlertReason = "auth_failure" | "timeout" | "repeated_empty";
+
+interface GroupAlertState {
+  groupName: string;
+  activeReasons: Set<AlertReason>;
+  consecutiveEmptyRuns: number;
+  lastAlertAt?: string;
+  lastAlertMessage?: string;
+}
+
+interface HealthSnapshot {
+  status: "ok" | "degraded";
+  runInProgress: boolean;
+  timestamp: string;
+  groupsWithAlerts: number;
+  groups: Array<{
+    groupId: string;
+    groupName: string;
+    consecutiveEmptyRuns: number;
+    activeReasons: AlertReason[];
+    lastAlertAt?: string;
+    lastAlertMessage?: string;
+  }>;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new TimeoutError(`Timed out after ${timeoutMs}ms: ${label}`));
+    }, timeoutMs);
+
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
 }
 
 function inferSiteIdFromUrl(url: string): string {
@@ -65,8 +116,86 @@ function getJitteredDelay(baseMs: number, jitterFraction = 0.3): number {
   return baseMs + (Math.random() * 2 - 1) * jitter;
 }
 
+function getGroupAlertState(groupId: string, groupName: string): GroupAlertState {
+  const existing = groupAlertStateByGroupId.get(groupId);
+  if (existing) return existing;
+
+  const created: GroupAlertState = {
+    groupName,
+    activeReasons: new Set<AlertReason>(),
+    consecutiveEmptyRuns: 0,
+  };
+  groupAlertStateByGroupId.set(groupId, created);
+  return created;
+}
+
+function setGroupAlert(groupId: string, groupName: string, reason: AlertReason, message: string): void {
+  const state = getGroupAlertState(groupId, groupName);
+  state.activeReasons.add(reason);
+  state.lastAlertAt = new Date().toISOString();
+  state.lastAlertMessage = message;
+}
+
+function clearGroupAlertReason(groupId: string, reason: AlertReason): void {
+  const state = groupAlertStateByGroupId.get(groupId);
+  if (!state) return;
+  state.activeReasons.delete(reason);
+}
+
+function clearAllGroupAlerts(groupId: string): void {
+  const state = groupAlertStateByGroupId.get(groupId);
+  if (!state) return;
+  state.activeReasons.clear();
+  state.lastAlertAt = undefined;
+  state.lastAlertMessage = undefined;
+}
+
+function getHealthSnapshot(): HealthSnapshot {
+  const groups = Array.from(groupAlertStateByGroupId.entries()).map(([groupId, state]) => ({
+    groupId,
+    groupName: state.groupName,
+    consecutiveEmptyRuns: state.consecutiveEmptyRuns,
+    activeReasons: Array.from(state.activeReasons.values()),
+    lastAlertAt: state.lastAlertAt,
+    lastAlertMessage: state.lastAlertMessage,
+  }));
+
+  const groupsWithAlerts = groups.filter((group) => group.activeReasons.length > 0).length;
+
+  return {
+    status: groupsWithAlerts > 0 ? "degraded" : "ok",
+    runInProgress,
+    timestamp: new Date().toISOString(),
+    groupsWithAlerts,
+    groups,
+  };
+}
+
+function startHealthServer(): void {
+  const healthPort = parsePositiveInteger(process.env.SCRAPER_HEALTH_PORT, 8081);
+  const server = createServer((req, res) => {
+    if (!req.url || req.url.split("?")[0] !== "/health") {
+      res.statusCode = 404;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
+
+    const snapshot = getHealthSnapshot();
+    res.statusCode = snapshot.status === "ok" ? 200 : 503;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(snapshot));
+  });
+
+  server.listen(healthPort, "0.0.0.0", () => {
+    console.log(`Health endpoint listening on port ${healthPort}`);
+  });
+}
+
 async function scrapeGroup(config: GroupConfig): Promise<void> {
   const siteId = config.siteId || inferSiteIdFromUrl(config.url);
+  const groupTimeoutMs = parsePositiveInteger(process.env.SCRAPE_GROUP_TIMEOUT_MS, 20 * 60 * 1000);
+  const alertState = getGroupAlertState(config.groupId, config.name);
   console.log(`[${new Date().toISOString()}] Scraping group: ${config.name} (${config.groupId}) via ${siteId}`);
 
   const groupId = await ensureGroup(config);
@@ -94,11 +223,41 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
 
   try {
     console.log(`  Running ${siteId} scraper...`);
-    const result = await engine.scrapeOne(siteId);
+    const result = await withTimeout(
+      engine.scrapeOne(siteId),
+      groupTimeoutMs,
+      `${config.name} (${config.groupId}) via ${siteId}`
+    );
     console.log(`  Scraper returned ${result.itemsExtracted} items`);
     if (result.errors.length > 0) {
       console.warn(`  Scraper errors:`, result.errors);
+
+      const hasAuthFailure = result.errors.some((error) => /authentication failed|cookies are required/i.test(error));
+      if (hasAuthFailure) {
+        const alertMessage = `[ALERT] ${config.name} (${config.groupId}) failed authentication. Refresh cookie files in /app/cookies and verify mount visibility.`;
+        setGroupAlert(config.groupId, config.name, "auth_failure", alertMessage);
+        console.error(alertMessage);
+      } else {
+        clearGroupAlertReason(config.groupId, "auth_failure");
+      }
+    } else {
+      clearGroupAlertReason(config.groupId, "auth_failure");
     }
+
+    if (result.itemsExtracted === 0) {
+      const current = alertState.consecutiveEmptyRuns + 1;
+      alertState.consecutiveEmptyRuns = current;
+      if (current >= 2) {
+        const alertMessage = `[ALERT] ${config.name} (${config.groupId}) returned 0 items for ${current} consecutive runs. Check cookies, source availability, and scraper logs.`;
+        setGroupAlert(config.groupId, config.name, "repeated_empty", alertMessage);
+        console.error(alertMessage);
+      }
+    } else {
+      alertState.consecutiveEmptyRuns = 0;
+      clearGroupAlertReason(config.groupId, "repeated_empty");
+      clearAllGroupAlerts(config.groupId);
+    }
+
     if (result.items.length > 0) {
       const upserted = await upsertItems(groupId, result.items);
       console.log(`  Upserted ${upserted} items into database`);
@@ -107,6 +266,11 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
     }
   } catch (err) {
     console.error(`  Scraper failed:`, err instanceof Error ? err.message : err);
+    if (err instanceof TimeoutError) {
+      const alertMessage = `[ALERT] ${config.name} (${config.groupId}) scrape exceeded timeout (${groupTimeoutMs}ms). Browser/session likely stalled; moving on to next group.`;
+      setGroupAlert(config.groupId, config.name, "timeout", alertMessage);
+      console.error(alertMessage);
+    }
   } finally {
     await engine.shutdown();
   }
@@ -126,6 +290,7 @@ async function runAllGroups(groups: GroupConfig[]): Promise<void> {
 }
 
 let runInProgress = false;
+const groupAlertStateByGroupId = new Map<string, GroupAlertState>();
 
 async function triggerRun(groups: GroupConfig[], trigger: "initial" | "scheduled"): Promise<void> {
   if (runInProgress) {
@@ -190,6 +355,7 @@ console.log(
     .map(([schedule, scheduledGroups]) => `${schedule} -> [${scheduledGroups.map((g) => g.name).join(", ")}]`)
     .join("; ")}`
 );
+startHealthServer();
 
 // Run once immediately on startup
 triggerRun(groups, "initial").then(() => {

@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import { createServer } from "node:http";
+import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
 import { ScrapeEngine } from "./ScrapeEngine.js";
 import {
   ensureGroup,
@@ -53,17 +54,17 @@ interface HealthSnapshot {
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
+    const timer = setNodeTimeout(() => {
       reject(new TimeoutError(`Timed out after ${timeoutMs}ms: ${label}`));
     }, timeoutMs);
 
     promise
       .then((value) => {
-        clearTimeout(timer);
+        clearNodeTimeout(timer);
         resolve(value);
       })
       .catch((error) => {
-        clearTimeout(timer);
+        clearNodeTimeout(timer);
         reject(error);
       });
   });
@@ -172,6 +173,10 @@ function getHealthSnapshot(): HealthSnapshot {
 }
 
 function startHealthServer(): void {
+  if (process.env.NODE_ENV === "test") {
+    return;
+  }
+
   const healthPort = parsePositiveInteger(process.env.SCRAPER_HEALTH_PORT, 8081);
   const server = createServer((req, res) => {
     if (!req.url || req.url.split("?")[0] !== "/health") {

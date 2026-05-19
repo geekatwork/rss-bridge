@@ -391,4 +391,173 @@ describe("scraper index startup", () => {
     resolveScrape?.();
     await flush();
   });
+
+  it("logs [ALERT] when auth failure is detected in scrape errors", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+
+    engineScrapeOneMock.mockResolvedValueOnce({
+      site: "facebook",
+      jobId: "job-auth",
+      items: [],
+      errors: ["authentication failed: cookies expired"],
+      startedAt: new Date("2026-01-01T00:00:00.000Z"),
+      completedAt: new Date("2026-01-01T00:00:01.000Z"),
+      durationMs: 1000,
+      itemsExtracted: 0,
+      linksResolved: 0,
+      linksResolveFailed: 0,
+    });
+
+    await import("./index.js");
+    await flush();
+    await flush();
+
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("[ALERT]")
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("authentication")
+    );
+  });
+
+  it("logs [ALERT] after two consecutive empty scrape runs", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+
+    engineScrapeOneMock.mockResolvedValue({
+      site: "facebook",
+      jobId: "job-empty",
+      items: [],
+      errors: [],
+      startedAt: new Date("2026-01-01T00:00:00.000Z"),
+      completedAt: new Date("2026-01-01T00:00:01.000Z"),
+      durationMs: 1000,
+      itemsExtracted: 0,
+      linksResolved: 0,
+      linksResolveFailed: 0,
+    });
+
+    await import("./index.js");
+    await flush();
+    await flush();
+
+    // After initial run: consecutiveEmptyRuns=1, no alert yet
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("[ALERT]"));
+
+    // Trigger second run via cron callback
+    const scheduleCb = scheduleMock.mock.calls[0]?.[1] as (() => Promise<void>) | undefined;
+    await scheduleCb?.();
+
+    // cron callback is sync; flush lets the async triggerRun settle
+    await flush();
+    await flush();
+
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("[ALERT]"));
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("2 consecutive run"));
+  });
+
+  it("logs pruned count when prune job succeeds", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+    pruneFacebookPostsMock.mockResolvedValueOnce(5);
+
+    await import("./index.js");
+    await flush();
+
+    const pruneCb = scheduleMock.mock.calls[1]?.[1] as (() => Promise<void>) | undefined;
+    await pruneCb?.();
+
+    expect(pruneFacebookPostsMock).toHaveBeenCalledWith(7); // default retention
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("Pruned 5 Facebook post(s)")
+    );
+  });
+
+  it("logs [ALERT] when prune job throws", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+    pruneFacebookPostsMock.mockRejectedValueOnce(new Error("DB connection lost"));
+
+    await import("./index.js");
+    await flush();
+
+    const pruneCb = scheduleMock.mock.calls[1]?.[1] as (() => Promise<void>) | undefined;
+    await pruneCb?.();
+
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("[ALERT]")
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("retention may not be enforced")
+    );
+  });
+
+  it("throws when default scrape schedule is invalid", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+    process.env.SCRAPE_SCHEDULE = "bad-schedule";
+    validateMock.mockImplementation((s: string) => s !== "bad-schedule");
+
+    await expect(import("./index.js")).rejects.toThrow(
+      'Invalid default scrape schedule cron expression: "bad-schedule"'
+    );
+  });
+
+  it("throws when a per-group schedule is invalid", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+        schedule: "bad-group-cron",
+      },
+    ]);
+    validateMock.mockImplementation((s: string) => s !== "bad-group-cron");
+
+    await expect(import("./index.js")).rejects.toThrow(
+      'Invalid schedule for group My Group cron expression: "bad-group-cron"'
+    );
+  });
+
+  it("wires a per-group explicit schedule to cron", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+        schedule: "*/30 * * * *",
+      },
+    ]);
+
+    await import("./index.js");
+    await flush();
+
+    expect(scheduleMock).toHaveBeenCalledWith("*/30 * * * *", expect.any(Function));
+  });
 });

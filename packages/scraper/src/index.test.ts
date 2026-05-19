@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   scheduleMock,
+  validateMock,
   ensureGroupMock,
   getLatestScrapedSourcePostIdMock,
   pruneFacebookPostsMock,
@@ -12,6 +13,7 @@ const {
   engineShutdownMock,
 } = vi.hoisted(() => ({
   scheduleMock: vi.fn(),
+  validateMock: vi.fn(),
   ensureGroupMock: vi.fn(),
   getLatestScrapedSourcePostIdMock: vi.fn(),
   pruneFacebookPostsMock: vi.fn(),
@@ -25,6 +27,7 @@ const {
 vi.mock("node-cron", () => ({
   default: {
     schedule: scheduleMock,
+    validate: validateMock,
   },
 }));
 
@@ -102,6 +105,7 @@ describe("scraper index startup", () => {
     engineShutdownMock.mockResolvedValue(undefined);
     upsertItemsMock.mockResolvedValue(1);
     pruneFacebookPostsMock.mockResolvedValue(0);
+    validateMock.mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -288,6 +292,20 @@ describe("scraper index startup", () => {
 
     await expect(import("./index.js")).rejects.toBe(exitError);
     expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("throws when prune schedule is invalid", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      {
+        groupId: "12345",
+        name: "My Group",
+        url: "https://www.facebook.com/groups/12345",
+      },
+    ]);
+    process.env.PRUNE_SCHEDULE = "not-a-cron";
+    validateMock.mockImplementation((schedule: string) => schedule !== "not-a-cron");
+
+    await expect(import("./index.js")).rejects.toThrow('Invalid prune schedule cron expression: "not-a-cron"');
   });
 
   it("skips overlapping scheduled runs", async () => {

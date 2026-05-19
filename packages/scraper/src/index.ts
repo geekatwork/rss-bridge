@@ -42,6 +42,12 @@ interface HealthSnapshot {
   runInProgress: boolean;
   timestamp: string;
   groupsWithAlerts: number;
+  prune: {
+    lastStartedAt: string | null;
+    lastCompletedAt: string | null;
+    lastDeleted: number | null;
+    lastError: string | null;
+  };
   groups: Array<{
     groupId: string;
     groupName: string;
@@ -50,6 +56,13 @@ interface HealthSnapshot {
     lastAlertAt?: string;
     lastAlertMessage?: string;
   }>;
+}
+
+interface PruneState {
+  lastStartedAt: string | null;
+  lastCompletedAt: string | null;
+  lastDeleted: number | null;
+  lastError: string | null;
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -164,10 +177,16 @@ function getHealthSnapshot(): HealthSnapshot {
   const groupsWithAlerts = groups.filter((group) => group.activeReasons.length > 0).length;
 
   return {
-    status: groupsWithAlerts > 0 ? "degraded" : "ok",
+    status: groupsWithAlerts > 0 || Boolean(pruneState.lastError) ? "degraded" : "ok",
     runInProgress,
     timestamp: new Date().toISOString(),
     groupsWithAlerts,
+    prune: {
+      lastStartedAt: pruneState.lastStartedAt,
+      lastCompletedAt: pruneState.lastCompletedAt,
+      lastDeleted: pruneState.lastDeleted,
+      lastError: pruneState.lastError,
+    },
     groups,
   };
 }
@@ -296,6 +315,12 @@ async function runAllGroups(groups: GroupConfig[]): Promise<void> {
 
 let runInProgress = false;
 const groupAlertStateByGroupId = new Map<string, GroupAlertState>();
+const pruneState: PruneState = {
+  lastStartedAt: null,
+  lastCompletedAt: null,
+  lastDeleted: null,
+  lastError: null,
+};
 
 async function triggerRun(groups: GroupConfig[], trigger: "initial" | "scheduled"): Promise<void> {
   if (runInProgress) {
@@ -318,13 +343,23 @@ async function triggerPrune(retentionDays: number): Promise<void> {
   }
 
   runInProgress = true;
+  pruneState.lastStartedAt = new Date().toISOString();
+  pruneState.lastCompletedAt = null;
+  pruneState.lastDeleted = null;
+  pruneState.lastError = null;
   try {
     const deleted = await pruneFacebookPosts(retentionDays);
+    pruneState.lastDeleted = deleted;
+    pruneState.lastCompletedAt = new Date().toISOString();
     console.log(
       `[${new Date().toISOString()}] Pruned ${deleted} Facebook post(s) older than ${retentionDays} day(s)`
     );
   } catch (err) {
-    console.error(`Prune job failed:`, err instanceof Error ? err.message : err);
+    const message = err instanceof Error ? err.message : String(err);
+    pruneState.lastError = message;
+    pruneState.lastCompletedAt = new Date().toISOString();
+    console.error(`Prune job failed:`, message);
+    console.error(`[ALERT] Prune job failed and retention may not be enforced until the next successful run.`);
   } finally {
     runInProgress = false;
   }
@@ -335,14 +370,24 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function assertValidCronSchedule(schedule: string, label: string): void {
+  if (!cron.validate(schedule)) {
+    throw new Error(`Invalid ${label} cron expression: "${schedule}"`);
+  }
+}
+
 const groups = loadGroups();
 const defaultSchedule = process.env.SCRAPE_SCHEDULE || "0 */2 * * *"; // default for groups without explicit schedule
 const pruneSchedule = process.env.PRUNE_SCHEDULE || "0 3 * * *";
 const pruneRetentionDays = parsePositiveInteger(process.env.PRUNE_RETENTION_DAYS, 7);
 
+assertValidCronSchedule(defaultSchedule, "default scrape schedule");
+assertValidCronSchedule(pruneSchedule, "prune schedule");
+
 const groupsBySchedule = new Map<string, GroupConfig[]>();
 for (const group of groups) {
   const schedule = getGroupSchedule(group, defaultSchedule);
+  assertValidCronSchedule(schedule, `schedule for group ${group.name}`);
   const existing = groupsBySchedule.get(schedule);
   if (existing) {
     existing.push(group);

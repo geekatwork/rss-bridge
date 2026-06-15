@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   canonicalizeCompetitionsNzUrl,
+  isCompetitionsNzAuthenticated,
   normalizeCompetitionsNzCards,
   resolveCompetitionsNzDestinationUrl,
   selectCompetitionsNzNextPageUrl,
@@ -177,5 +178,59 @@ describe("normalizeCompetitionsNzCards", () => {
     const items = normalizeCompetitionsNzCards(cards, "competitions-nz");
     expect(items).toHaveLength(1);
     expect(items[0]?.link).toBe("https://www.competitions.co.nz/win-home-makeover/38111");
+  });
+});
+
+describe("isCompetitionsNzAuthenticated", () => {
+  it("returns true when sort controls are visible", () => {
+    expect(
+      isCompetitionsNzAuthenticated({
+        hasGuestCtas: true,
+        hasSortControl: true,
+        hasCompetitionCards: false,
+        hasAuthWallText: false,
+        hasLoggedInCookie: false,
+        hasUserIdCookie: false,
+      })
+    ).toBe(true);
+  });
+
+  it("returns false for guest view without auth cookies", () => {
+    expect(
+      isCompetitionsNzAuthenticated({
+        hasGuestCtas: true,
+        hasSortControl: false,
+        hasCompetitionCards: false,
+        hasAuthWallText: false,
+        hasLoggedInCookie: false,
+        hasUserIdCookie: false,
+      })
+    ).toBe(false);
+  });
+
+  it("returns true when auth cookies are present even if guest CTAs are visible", () => {
+    expect(
+      isCompetitionsNzAuthenticated({
+        hasGuestCtas: true,
+        hasSortControl: false,
+        hasCompetitionCards: false,
+        hasAuthWallText: false,
+        hasLoggedInCookie: true,
+        hasUserIdCookie: true,
+      })
+    ).toBe(true);
+  });
+
+  it("returns false when page has explicit auth wall text", () => {
+    expect(
+      isCompetitionsNzAuthenticated({
+        hasGuestCtas: false,
+        hasSortControl: false,
+        hasCompetitionCards: false,
+        hasAuthWallText: true,
+        hasLoggedInCookie: true,
+        hasUserIdCookie: true,
+      })
+    ).toBe(false);
   });
 });

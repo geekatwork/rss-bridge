@@ -34,6 +34,15 @@ interface CompetitionsNzExtractResult {
   paginationLinks: CompetitionsNzPaginationLink[];
 }
 
+interface CompetitionsNzAuthSignals {
+  hasGuestCtas: boolean;
+  hasSortControl: boolean;
+  hasCompetitionCards: boolean;
+  hasAuthWallText: boolean;
+  hasLoggedInCookie: boolean;
+  hasUserIdCookie: boolean;
+}
+
 interface CompetitionsNzCookieEntry {
   name: string;
   value: string;
@@ -84,6 +93,22 @@ export function toCompetitionsNzExitUrl(rawUrl: string): string | null {
 
   const parsed = new URL(canonical);
   return `${parsed.origin}/exit${parsed.pathname}/`;
+}
+
+export function isCompetitionsNzAuthenticated(signals: CompetitionsNzAuthSignals): boolean {
+  if (signals.hasSortControl || signals.hasCompetitionCards) {
+    return true;
+  }
+
+  if (signals.hasAuthWallText) {
+    return false;
+  }
+
+  if (signals.hasGuestCtas && !(signals.hasLoggedInCookie && signals.hasUserIdCookie)) {
+    return false;
+  }
+
+  return signals.hasLoggedInCookie && signals.hasUserIdCookie;
 }
 
 export function selectCompetitionsNzNextPageUrl(
@@ -321,8 +346,9 @@ export class CompetitionsNzScraper extends SiteScraper {
   private async isAuthenticated(): Promise<boolean> {
     if (!this.page) throw new Error("Page not initialized");
 
-    return this.page.evaluate(() => {
+    const domSignals = await this.page.evaluate(() => {
       const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+      const allText = normalize(document.body?.innerText || "");
       const visibleTexts = Array.from(document.querySelectorAll<HTMLElement>("a, button, [role='button']"))
         .filter((node) => {
           const rect = node.getBoundingClientRect();
@@ -333,7 +359,27 @@ export class CompetitionsNzScraper extends SiteScraper {
 
       const hasGuestCtas = visibleTexts.includes("sign in") && visibleTexts.includes("join free");
       const hasSortControl = visibleTexts.some((text) => text === "newest" || text === "popular" || text === "ending soon" || text === "prize value");
-      return hasSortControl || !hasGuestCtas;
+      const hasCompetitionCards = document.querySelector("article.competition-card") !== null;
+      const hasAuthWallText = allText.includes("you must be logged in")
+        || allText.includes("please sign in")
+        || allText.includes("please log in");
+
+      return {
+        hasGuestCtas,
+        hasSortControl,
+        hasCompetitionCards,
+        hasAuthWallText,
+      };
+    });
+
+    const browserCookies = await this.page.cookies("https://www.competitions.co.nz/");
+    const loggedInCookie = browserCookies.find((cookie) => cookie.name === "LOGGEDIN")?.value || "";
+    const userIdCookie = browserCookies.find((cookie) => cookie.name === "USERID")?.value || "";
+
+    return isCompetitionsNzAuthenticated({
+      ...domSignals,
+      hasLoggedInCookie: /^true$/i.test(loggedInCookie),
+      hasUserIdCookie: userIdCookie.trim() !== "",
     });
   }
 
@@ -467,7 +513,16 @@ export class CompetitionsNzScraper extends SiteScraper {
     await this.loadCookies(context);
     await this.page.goto(sourceUrl, { waitUntil: "networkidle2", timeout: 60000 });
 
-    if (!(await this.isAuthenticated())) {
+    const authenticated = await this.isAuthenticated();
+    if (!authenticated) {
+      const cookiePathCandidates = this.getCookiePathCandidates();
+      context.logger.warn(
+        {
+          sourceUrl,
+          cookiePathCandidates,
+        },
+        "Competitions NZ authentication check failed after loading cookies"
+      );
       await this.login(context);
       await this.page.goto(sourceUrl, { waitUntil: "networkidle2", timeout: 60000 });
     }

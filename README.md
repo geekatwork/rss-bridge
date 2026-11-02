@@ -148,6 +148,51 @@ Notes:
 - Feed channel `link`/`id` intentionally points to the feed URL itself.
 - Items with landing/root-like links are filtered out.
 
+## Scraper Scheduler Diagnostics
+
+The scraper logs JSON events alongside its existing scrape output:
+
+- `job_scheduled`: cron's scheduled time, callback observation time, and intentional jitter.
+- `job_started`, `job_finished`, `job_failed`: actual execution timestamps and monotonic duration.
+- `job_skipped_locked`: work skipped by the existing shared scrape/prune lock.
+- `job_missed`: cron reported a missed execution. The event records observation time;
+  node-cron 4.2.1's missed-event date is not reliable as the missed scheduled time.
+- `scheduler_runtime`: every 30 seconds, event-loop maximum/p99 delay, timer delay,
+  and wall-clock drift relative to the monotonic clock. Delays/drift above 2 seconds
+  produce warnings. These distinguish symptoms, not definitive causes of host suspension.
+
+The internal scraper `GET /health` endpoint includes `jobs`, with per-group scrape
+and prune timestamps, last success/error, missed/skipped counts, and freshness.
+It returns HTTP 503 when any job is stale, in addition to existing alert conditions.
+Successful empty scrapes count as success; reported scraper errors do not.
+
+Freshness allows the next cron occurrence plus 10 minutes of jitter and a full
+sequential scrape cycle (group count times the group timeout plus inter-group delay).
+Startup receives the same cycle allowance. Prune allows 5 minutes after its scheduled
+time. These are diagnostic budgets, not new execution timeouts; browser setup, database
+work, and cleanup can exceed them. Failed/skipped/missed runs do not extend the deadline.
+State is in memory and resets on process restart; no catch-up/retry behavior is added.
+Docker health status alone does not trigger a restart under `restart: unless-stopped`.
+
+Inspect the health payload from inside the container:
+
+```bash
+docker compose exec -T scraper sh -c 'wget -qO- "http://127.0.0.1:${SCRAPER_HEALTH_PORT:-8081}/health"'
+```
+
+For an incident, collect a bounded UTC log window and host events at the same times:
+
+```bash
+docker logs --timestamps --since "2026-11-02T05:50:00Z" --until "2026-11-02T06:20:00Z" rss-bridge-scraper
+docker inspect rss-bridge-scraper --format '{{.State.Status}} Restarts={{.RestartCount}} OOM={{.State.OOMKilled}} Started={{.State.StartedAt}}'
+docker events --since "2026-11-02T05:50:00Z" --until "2026-11-02T06:20:00Z" --filter container=rss-bridge-scraper
+journalctl --utc --since "2026-11-02 05:50:00 UTC" --until "2026-11-02 06:20:00 UTC" --no-pager
+```
+
+Current container state is not historical proof of restart/OOM absence, and Docker
+events may no longer be retained. Correlate runtime samples with host sleep/clock
+events and CPU throttling before choosing a remediation.
+
 ## Retention
 
 The scraper runs a daily retention job for Facebook groups only.

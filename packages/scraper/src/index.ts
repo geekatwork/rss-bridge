@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import { createServer } from "node:http";
+import { performance } from "node:perf_hooks";
 import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
 import { ScrapeEngine } from "./ScrapeEngine.js";
 import {
@@ -9,6 +10,7 @@ import {
   upsertItems,
 } from "./db.js";
 import type { GroupConfig } from "./types.js";
+import { SchedulerDiagnostics, startRuntimeDiagnostics } from "./schedulerDiagnostics.js";
 
 interface GroupConfigInput {
   groupId?: string;
@@ -42,6 +44,7 @@ interface HealthSnapshot {
   runInProgress: boolean;
   timestamp: string;
   groupsWithAlerts: number;
+  jobs: ReturnType<SchedulerDiagnostics["snapshot"]>;
   prune: {
     lastStartedAt: string | null;
     lastCompletedAt: string | null;
@@ -164,7 +167,7 @@ function clearAllGroupAlerts(groupId: string): void {
   state.lastAlertMessage = undefined;
 }
 
-function getHealthSnapshot(): HealthSnapshot {
+export function getHealthSnapshot(): HealthSnapshot {
   const groups = Array.from(groupAlertStateByGroupId.entries()).map(([groupId, state]) => ({
     groupId,
     groupName: state.groupName,
@@ -175,12 +178,14 @@ function getHealthSnapshot(): HealthSnapshot {
   }));
 
   const groupsWithAlerts = groups.filter((group) => group.activeReasons.length > 0).length;
+  const jobs = diagnostics.snapshot();
 
   return {
-    status: groupsWithAlerts > 0 || Boolean(pruneState.lastError) ? "degraded" : "ok",
+    status: groupsWithAlerts > 0 || Boolean(pruneState.lastError) || jobs.some((job) => job.stale) ? "degraded" : "ok",
     runInProgress,
     timestamp: new Date().toISOString(),
     groupsWithAlerts,
+    jobs,
     prune: {
       lastStartedAt: pruneState.lastStartedAt,
       lastCompletedAt: pruneState.lastCompletedAt,
@@ -216,7 +221,7 @@ function startHealthServer(): void {
   });
 }
 
-async function scrapeGroup(config: GroupConfig): Promise<void> {
+async function scrapeGroup(config: GroupConfig): Promise<boolean> {
   const siteId = config.siteId || inferSiteIdFromUrl(config.url);
   const groupTimeoutMs = parsePositiveInteger(process.env.SCRAPE_GROUP_TIMEOUT_MS, 20 * 60 * 1000);
   const alertState = getGroupAlertState(config.groupId, config.name);
@@ -288,6 +293,7 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
     } else {
       console.log(`  No items found for ${config.name}`);
     }
+    return result.errors.length === 0;
   } catch (err) {
     console.error(`  Scraper failed:`, err instanceof Error ? err.message : err);
     if (err instanceof TimeoutError) {
@@ -295,18 +301,28 @@ async function scrapeGroup(config: GroupConfig): Promise<void> {
       setGroupAlert(config.groupId, config.name, "timeout", alertMessage);
       console.error(alertMessage);
     }
+    return false;
   } finally {
     await engine.shutdown();
   }
 }
 
-async function runAllGroups(groups: GroupConfig[]): Promise<void> {
+async function runAllGroups(groups: GroupConfig[], scheduledAt: Date | null): Promise<void> {
   for (const group of groups) {
     try {
       // Random delay between groups to avoid pattern detection
       const delay = getJitteredDelay(2000);
       await new Promise((r) => setTimeout(r, delay));
-      await scrapeGroup(group);
+      const jobId = `scrape:${group.groupId}`;
+      diagnostics.started(jobId, scheduledAt);
+      const started = performance.now();
+      try {
+        const success = await scrapeGroup(group);
+        diagnostics.completed(jobId, success, performance.now() - started);
+      } catch (error) {
+        diagnostics.completed(jobId, false, performance.now() - started, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
     } catch (err) {
       console.error(`Error scraping group ${group.name}:`, err instanceof Error ? err.message : err);
     }
@@ -314,6 +330,7 @@ async function runAllGroups(groups: GroupConfig[]): Promise<void> {
 }
 
 let runInProgress = false;
+const diagnostics = new SchedulerDiagnostics();
 const groupAlertStateByGroupId = new Map<string, GroupAlertState>();
 const pruneState: PruneState = {
   lastStartedAt: null,
@@ -322,27 +339,31 @@ const pruneState: PruneState = {
   lastError: null,
 };
 
-async function triggerRun(groups: GroupConfig[], trigger: "initial" | "scheduled"): Promise<void> {
+async function triggerRun(groups: GroupConfig[], trigger: "initial" | "scheduled", scheduledAt: Date | null = null): Promise<void> {
   if (runInProgress) {
+    for (const group of groups) diagnostics.skipped(`scrape:${group.groupId}`);
     console.warn(`[${new Date().toISOString()}] Skipping ${trigger} run because a scrape cycle is already in progress`);
     return;
   }
 
   runInProgress = true;
   try {
-    await runAllGroups(groups);
+    await runAllGroups(groups, scheduledAt);
   } finally {
     runInProgress = false;
   }
 }
 
-async function triggerPrune(retentionDays: number): Promise<void> {
+async function triggerPrune(retentionDays: number, scheduledAt: Date): Promise<void> {
   if (runInProgress) {
+    diagnostics.skipped("prune");
     console.warn(`[${new Date().toISOString()}] Skipping prune run because a scrape cycle is already in progress`);
     return;
   }
 
   runInProgress = true;
+  diagnostics.started("prune", scheduledAt);
+  const started = performance.now();
   pruneState.lastStartedAt = new Date().toISOString();
   pruneState.lastCompletedAt = null;
   pruneState.lastDeleted = null;
@@ -351,6 +372,7 @@ async function triggerPrune(retentionDays: number): Promise<void> {
     const deleted = await pruneFacebookPosts(retentionDays);
     pruneState.lastDeleted = deleted;
     pruneState.lastCompletedAt = new Date().toISOString();
+    diagnostics.completed("prune", true, performance.now() - started);
     console.log(
       `[${new Date().toISOString()}] Pruned ${deleted} Facebook post(s) older than ${retentionDays} day(s)`
     );
@@ -358,6 +380,7 @@ async function triggerPrune(retentionDays: number): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     pruneState.lastError = message;
     pruneState.lastCompletedAt = new Date().toISOString();
+    diagnostics.completed("prune", false, performance.now() - started, message);
     console.error(`Prune job failed:`, message);
     console.error(`[ALERT] Prune job failed and retention may not be enforced until the next successful run.`);
   } finally {
@@ -405,28 +428,49 @@ console.log(
     .map(([schedule, scheduledGroups]) => `${schedule} -> [${scheduledGroups.map((g) => g.name).join(", ")}]`)
     .join("; ")}`
 );
-startHealthServer();
-
-// Run once immediately on startup
-triggerRun(groups, "initial").then(() => {
-  console.log("Initial scrape complete. Scheduling future runs...");
-});
-
 for (const [schedule, scheduledGroups] of groupsBySchedule.entries()) {
-  cron.schedule(schedule, () => {
+  const task = cron.schedule(schedule, (context) => {
     // Add random jitter before starting (0-10 minutes)
     const jitterMs = Math.random() * 10 * 60 * 1000;
+    for (const group of scheduledGroups) diagnostics.scheduled(`scrape:${group.groupId}`, context.date, jitterMs);
     console.log(
       `[${new Date().toISOString()}] Scheduled run triggered for ${scheduledGroups.length} group(s) on ${schedule}, waiting ${Math.round(jitterMs / 1000)}s jitter...`
     );
     setTimeout(() => {
-      void triggerRun(scheduledGroups, "scheduled");
+      void triggerRun(scheduledGroups, "scheduled", context.date);
     }, jitterMs);
   });
+  const groupTimeoutMs = parsePositiveInteger(process.env.SCRAPE_GROUP_TIMEOUT_MS, 20 * 60 * 1000);
+  // Include startup's full sequential cycle and scheduled jitter in the freshness budget.
+  const allowanceMs = 10 * 60 * 1000 + groups.length * (groupTimeoutMs + 2600);
+  for (const group of scheduledGroups) {
+    const jobId = `scrape:${group.groupId}`;
+    diagnostics.register(jobId, schedule, () => {
+      const next = task.getNextRun();
+      if (!next) throw new Error(`No next run for active schedule: ${schedule}`);
+      return next;
+    }, allowanceMs, true);
+    task.on("execution:missed", () => diagnostics.missed(jobId));
+  }
 }
 
-cron.schedule(pruneSchedule, () => {
-  void triggerPrune(pruneRetentionDays);
+const pruneTask = cron.schedule(pruneSchedule, (context) => {
+  diagnostics.scheduled("prune", context.date);
+  void triggerPrune(pruneRetentionDays, context.date);
+});
+diagnostics.register("prune", pruneSchedule, () => {
+  const next = pruneTask.getNextRun();
+  if (!next) throw new Error(`No next run for active schedule: ${pruneSchedule}`);
+  return next;
+}, 5 * 60 * 1000);
+pruneTask.on("execution:missed", () => diagnostics.missed("prune"));
+
+startHealthServer();
+if (process.env.NODE_ENV !== "test") startRuntimeDiagnostics();
+
+// Run once immediately on startup; cron schedules are already active.
+triggerRun(groups, "initial").then(() => {
+  console.log("Initial scrape complete. Cron schedules remain active.");
 });
 
 console.log("Scraper is running. Press Ctrl+C to stop.");

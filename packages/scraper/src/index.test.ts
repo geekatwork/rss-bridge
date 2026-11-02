@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskContext } from "node-cron";
 
 const {
   scheduleMock,
@@ -49,6 +50,11 @@ vi.mock("./ScrapeEngine.js", () => ({
 
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+function cronContext(): TaskContext {
+  const date = new Date();
+  return { date, dateLocalIso: date.toISOString(), triggeredAt: date };
 }
 
 describe("scraper index startup", () => {
@@ -106,6 +112,10 @@ describe("scraper index startup", () => {
     upsertItemsMock.mockResolvedValue(1);
     pruneFacebookPostsMock.mockResolvedValue(0);
     validateMock.mockReturnValue(true);
+    scheduleMock.mockImplementation(() => ({
+      getNextRun: () => new Date(Date.now() + 2 * 60 * 60 * 1000),
+      on: vi.fn(),
+    }));
   });
 
   afterEach(() => {
@@ -196,6 +206,40 @@ describe("scraper index startup", () => {
     expect(upsertItemsMock).not.toHaveBeenCalled();
   });
 
+  it("reports per-job success and stale freshness in health", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    const { getHealthSnapshot } = await import("./index.js");
+    await flush();
+    await flush();
+
+    const health = getHealthSnapshot();
+    expect(health.status).toBe("ok");
+    expect(health.jobs).toEqual([
+      expect.objectContaining({ jobId: "scrape:12345", lastSuccessAt: expect.any(String), stale: false }),
+      expect.objectContaining({ jobId: "prune", lastSuccessAt: null, stale: false }),
+    ]);
+    const deadline = Math.max(...health.jobs.map((job) => Date.parse(job.expectedCompletionBy)));
+    vi.spyOn(Date, "now").mockReturnValue(deadline + 1);
+    expect(getHealthSnapshot().status).toBe("degraded");
+    expect(getHealthSnapshot().jobs.every((job) => job.stale)).toBe(true);
+  });
+
+  it("does not mark a scrape with reported errors as successful", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    const result = await engineScrapeOneMock();
+    engineScrapeOneMock.mockResolvedValue({ ...result, errors: ["source unavailable"] });
+    const { getHealthSnapshot } = await import("./index.js");
+    await flush();
+    await flush();
+    expect(getHealthSnapshot().jobs[0]).toMatchObject({
+      lastSuccessAt: null, lastCompletedAt: expect.any(String), lastError: "Scrape reported errors",
+    });
+  });
+
   it("uses custom schedule when configured", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       {
@@ -278,8 +322,9 @@ describe("scraper index startup", () => {
 
     expect(scheduleMock).toHaveBeenCalledWith("30 4 * * *", expect.any(Function));
 
-    const pruneCb = scheduleMock.mock.calls[1]?.[1] as (() => Promise<void>) | undefined;
-    await pruneCb?.();
+    const pruneCb = scheduleMock.mock.calls[1]?.[1] as ((context: TaskContext) => void) | undefined;
+    pruneCb?.(cronContext());
+    await flush();
 
     expect(pruneFacebookPostsMock).toHaveBeenCalledWith(9);
   });
@@ -340,9 +385,9 @@ describe("scraper index startup", () => {
     await import("./index.js");
     await flush();
 
-    const scheduleCb = scheduleMock.mock.calls[0]?.[1] as (() => void) | undefined;
+    const scheduleCb = scheduleMock.mock.calls[0]?.[1] as ((context: TaskContext) => void) | undefined;
     expect(scheduleCb).toBeTypeOf("function");
-    scheduleCb?.();
+    scheduleCb?.(cronContext());
 
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping scheduled run because a scrape cycle is already in progress"));
 
@@ -382,8 +427,9 @@ describe("scraper index startup", () => {
     await import("./index.js");
     await flush();
 
-    const pruneCb = scheduleMock.mock.calls[1]?.[1] as (() => Promise<void>) | undefined;
-    await pruneCb?.();
+    const pruneCb = scheduleMock.mock.calls[1]?.[1] as ((context: TaskContext) => void) | undefined;
+    pruneCb?.(cronContext());
+    await flush();
 
     expect(pruneFacebookPostsMock).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Skipping prune run because a scrape cycle is already in progress"));
@@ -456,8 +502,8 @@ describe("scraper index startup", () => {
     expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("[ALERT]"));
 
     // Trigger second run via cron callback
-    const scheduleCb = scheduleMock.mock.calls[0]?.[1] as (() => Promise<void>) | undefined;
-    await scheduleCb?.();
+    const scheduleCb = scheduleMock.mock.calls[0]?.[1] as ((context: TaskContext) => void) | undefined;
+    scheduleCb?.(cronContext());
 
     // cron callback is sync; flush lets the async triggerRun settle
     await flush();
@@ -480,8 +526,9 @@ describe("scraper index startup", () => {
     await import("./index.js");
     await flush();
 
-    const pruneCb = scheduleMock.mock.calls[1]?.[1] as (() => Promise<void>) | undefined;
-    await pruneCb?.();
+    const pruneCb = scheduleMock.mock.calls[1]?.[1] as ((context: TaskContext) => void) | undefined;
+    pruneCb?.(cronContext());
+    await flush();
 
     expect(pruneFacebookPostsMock).toHaveBeenCalledWith(7); // default retention
     expect(console.log).toHaveBeenCalledWith(
@@ -502,8 +549,9 @@ describe("scraper index startup", () => {
     await import("./index.js");
     await flush();
 
-    const pruneCb = scheduleMock.mock.calls[1]?.[1] as (() => Promise<void>) | undefined;
-    await pruneCb?.();
+    const pruneCb = scheduleMock.mock.calls[1]?.[1] as ((context: TaskContext) => void) | undefined;
+    pruneCb?.(cronContext());
+    await flush();
 
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining("[ALERT]")

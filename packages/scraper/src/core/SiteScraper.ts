@@ -1,5 +1,13 @@
 import type { NormalizedItem, ScraperContext, ScrapeResult, SiteConfig } from "./types.js";
 
+/** A page-local failure after which the plugin can safely check and advance pagination. */
+export class RecoverablePageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RecoverablePageError";
+  }
+}
+
 /**
  * Abstract base class for all site-specific scrapers.
  * Extend this class to add a new content source.
@@ -90,41 +98,72 @@ export abstract class SiteScraper {
       await this.init(context);
 
       let pageCount = 0;
+      let consecutivePageErrors = 0;
       const maxPages = (context.config.maxPages as number) ?? 10;
+      const recordPageError = (step: string, error: unknown): void => {
+        const message = error instanceof Error ? error.message : String(error);
+        context.logger.warn(
+          { site: this.config.siteId, jobId: context.jobId, page: pageCount + 1, step, error: message },
+          "Scraper step failed"
+        );
+        errors.push(`Page ${pageCount + 1} (${step}): ${message}`);
+      };
 
       // Pagination loop
       while (pageCount < maxPages) {
+        let step = "fetch";
+        let pageFailed = false;
         try {
           context.logger.debug({ site: this.config.siteId, page: pageCount + 1 }, "Fetching listing");
           await this.fetchListing(context);
 
+          step = "extract";
           context.logger.debug({ site: this.config.siteId, page: pageCount + 1 }, "Extracting items");
           const items = await this.extractItems(context);
           context.logger.info({ site: this.config.siteId, page: pageCount + 1, count: items.length }, "Extracted items");
 
           if (items.length > 0) {
+            step = "resolve";
             context.logger.debug({ site: this.config.siteId }, "Resolving links");
-            const beforeCount = items.filter((i) => i.link).length;
-            await this.resolveLinks(context, items);
-            const afterCount = items.filter((i) => i.link).length;
-            linksResolved += afterCount - beforeCount;
-            linksFailed += items.filter((i) => !i.link).length;
-            allItems.push(...items);
+            const unresolvedItems = items.filter((item) => !item.link);
+            try {
+              await this.resolveLinks(context, items);
+            } finally {
+              linksResolved += unresolvedItems.filter((item) => item.link).length;
+              linksFailed += items.filter((item) => !item.link).length;
+              allItems.push(...items);
+            }
           }
+        } catch (error) {
+          recordPageError(step, error);
+          pageFailed = true;
+          consecutivePageErrors++;
+          if (!(error instanceof RecoverablePageError)) break;
+          if (consecutivePageErrors >= 3) {
+            context.logger.warn(
+              { site: this.config.siteId, jobId: context.jobId, consecutivePageErrors },
+              "Stopping after three consecutive failed pages"
+            );
+            break;
+          }
+        }
 
-          const hasMore = await this.hasMorePages(context);
-          if (!hasMore || allItems.length >= (context.maxItems ?? 100)) {
+        if (!pageFailed) consecutivePageErrors = 0;
+        if (allItems.length >= (context.maxItems ?? 100) || pageCount + 1 >= maxPages) break;
+
+        try {
+          step = "hasMorePages";
+          if (!(await this.hasMorePages(context))) {
             context.logger.info({ site: this.config.siteId }, "No more pages or max items reached");
             break;
           }
 
+          step = "nextPage";
           await this.nextPage(context);
           pageCount++;
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          context.logger.warn({ site: this.config.siteId, page: pageCount + 1, error: msg }, "Error during pagination");
-          errors.push(`Page ${pageCount + 1}: ${msg}`);
-          break; // Stop on pagination error
+        } catch (error) {
+          recordPageError(step, error);
+          break;
         }
       }
 

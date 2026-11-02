@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { SiteScraper } from "./SiteScraper.js";
+import { describe, expect, it, vi } from "vitest";
+import { RecoverablePageError, SiteScraper } from "./SiteScraper.js";
 import type { NormalizedItem, ScraperContext, SiteConfig } from "./types.js";
 
 class ControlledScraper extends SiteScraper {
@@ -35,7 +35,7 @@ class ControlledScraper extends SiteScraper {
   }
 
   async extractItems(_context: ScraperContext): Promise<NormalizedItem[]> {
-    return this.pages[this.listingCalls - 1] ?? [];
+    return this.pages[this.nextCalls] ?? [];
   }
 
   async resolveLinks(_context: ScraperContext, items: NormalizedItem[]): Promise<void> {
@@ -47,7 +47,7 @@ class ControlledScraper extends SiteScraper {
   }
 
   async hasMorePages(_context: ScraperContext): Promise<boolean> {
-    return this.listingCalls < this.pages.length;
+    return this.nextCalls + 1 < this.pages.length;
   }
 
   async nextPage(_context: ScraperContext): Promise<void> {
@@ -130,7 +130,117 @@ describe("SiteScraper run lifecycle", () => {
 
     expect(scraper.listingCalls).toBe(2);
     expect(result.itemsExtracted).toBe(1);
-    expect(result.errors).toContain("Page 2: fetch failed");
+    expect(result.errors).toContain("Page 2 (fetch): fetch failed");
+  });
+
+  it("retains partially resolved items and accurate counters when resolution fails", async () => {
+    const scraper = new ControlledScraper(config, [
+      [makeItem("a"), makeItem("b"), makeItem("c", true)],
+      [makeItem("d")],
+    ]);
+    vi.spyOn(scraper, "resolveLinks").mockImplementation(async (_context, items) => {
+      items[0].link = "https://resolved.local/a";
+      throw new Error("resolution failed");
+    });
+    const result = await scraper.run(makeContext());
+    expect(result.items.map((item) => item.sourceId)).toEqual(["a", "b", "c"]);
+    expect(result.linksResolved).toBe(1);
+    expect(result.linksResolveFailed).toBe(1);
+    expect(result.errors).toEqual(["Page 1 (resolve): resolution failed"]);
+    expect(scraper.nextCalls).toBe(0);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it.each(["fetchListing", "extractItems", "resolveLinks"] as const)(
+    "advances safely after a recoverable %s failure",
+    async (method) => {
+      const scraper = new ControlledScraper(config, [[makeItem("a")], [makeItem("b")]]);
+      vi.spyOn(scraper, method).mockRejectedValueOnce(new RecoverablePageError("page unavailable"));
+      const context = makeContext();
+      const warn = vi.spyOn(context.logger, "warn");
+      const result = await scraper.run(context);
+      expect(result.items.map((item) => item.sourceId)).toEqual(method === "resolveLinks" ? ["a", "b"] : ["b"]);
+      expect(result.errors).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ site: "test-site", jobId: "job-1", page: 1, step: expect.any(String) }),
+        "Scraper step failed"
+      );
+      expect(scraper.nextCalls).toBe(1);
+      expect(scraper.shutdownCalls).toBe(1);
+    }
+  );
+
+  it("stops after three consecutive failed pages", async () => {
+    const scraper = new ControlledScraper(config, Array.from({ length: 5 }, () => [makeItem("a")]));
+    vi.spyOn(scraper, "extractItems").mockRejectedValue(new RecoverablePageError("extract failed"));
+    const result = await scraper.run(makeContext());
+    expect(scraper.listingCalls).toBe(3);
+    expect(scraper.nextCalls).toBe(2);
+    expect(result.errors).toHaveLength(3);
+    expect(result.items).toEqual([]);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("resets the consecutive failure count after a successful page", async () => {
+    const scraper = new ControlledScraper(config, Array.from({ length: 6 }, (_, index) => [makeItem(String(index))]));
+    const extract = scraper.extractItems.bind(scraper);
+    vi.spyOn(scraper, "extractItems").mockImplementation(async (context) => {
+      if (scraper.listingCalls !== 3 && scraper.listingCalls !== 6) {
+        throw new RecoverablePageError("temporary failure");
+      }
+      return extract(context);
+    });
+    const result = await scraper.run(makeContext());
+    expect(result.items.map((item) => item.sourceId)).toEqual(["2", "5"]);
+    expect(result.errors).toHaveLength(4);
+    expect(scraper.listingCalls).toBe(6);
+  });
+
+  it.each(["hasMorePages", "nextPage"] as const)("stops on %s failure even if marked recoverable", async (method) => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")], [makeItem("b")]]);
+    vi.spyOn(scraper, method).mockRejectedValue(new RecoverablePageError("navigation failed"));
+    const result = await scraper.run(makeContext());
+    expect(result.itemsExtracted).toBe(1);
+    expect(result.errors).toEqual([`Page 1 (${method}): navigation failed`]);
+    expect(scraper.listingCalls).toBe(1);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("does not advance beyond maxPages after a recoverable failure", async () => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")], [makeItem("b")]]);
+    vi.spyOn(scraper, "extractItems").mockRejectedValue(new RecoverablePageError("extract failed"));
+    const result = await scraper.run(makeContext({ config: { maxPages: 1 } }));
+    expect(result.errors).toHaveLength(1);
+    expect(scraper.nextCalls).toBe(0);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("records non-Error extraction failures and stops safely", async () => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")], [makeItem("b")]]);
+    vi.spyOn(scraper, "extractItems").mockRejectedValue("unknown failure");
+    const result = await scraper.run(makeContext());
+    expect(result.errors).toEqual(["Page 1 (extract): unknown failure"]);
+    expect(scraper.nextCalls).toBe(0);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("does not navigate when a recoverable failure occurs on the last page", async () => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")]]);
+    vi.spyOn(scraper, "extractItems").mockRejectedValue(new RecoverablePageError("extract failed"));
+    const result = await scraper.run(makeContext());
+    expect(result.errors).toEqual(["Page 1 (extract): extract failed"]);
+    expect(scraper.nextCalls).toBe(0);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("does not recover initialization failures even when marked recoverable", async () => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")]]);
+    vi.spyOn(scraper, "init").mockRejectedValue(new RecoverablePageError("session unavailable"));
+    const result = await scraper.run(makeContext());
+    expect(result.errors).toEqual(["session unavailable"]);
+    expect(scraper.listingCalls).toBe(0);
+    expect(scraper.nextCalls).toBe(0);
+    expect(scraper.shutdownCalls).toBe(1);
   });
 
   it("records fatal init and shutdown errors", async () => {

@@ -80,6 +80,23 @@ Each file in this directory implements a `SiteScraper` for a specific content so
 5. **Deduplicate** — Use computeContentHash() + store hashes in DB
 6. **Test with fixture HTML** — Mock responses instead of live scraping during dev
 
+## Page Failure Handling
+
+`SiteScraper.run()` records page failures with the failing step (`fetch`, `extract`,
+`resolve`, `hasMorePages`, or `nextPage`). Extracted items and partial link-resolution
+results are retained if `resolveLinks()` throws; the error remains in `ScrapeResult.errors`.
+
+Ordinary errors stop the run. For a page-local fetch, extraction, or resolution
+failure, a plugin may throw `RecoverablePageError` (exported from core) only when
+its current state permits a reliable `hasMorePages()` check and `nextPage()` advance.
+Do not mark authentication failures, lost browser sessions, or uncertain navigation
+state as recoverable. The runner advances before processing another page; it never
+retries the same page implicitly. Pagination-check/advance failures always stop.
+
+The runner stops after three consecutive failed pages, resets that count after a
+successful page, and continues to honor page/item stopping limits. Initialization
+failures remain fatal, and shutdown is attempted once for every run.
+
 ## Config Template
 
 ```json

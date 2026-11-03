@@ -119,6 +119,8 @@ export class ExampleScraper extends SiteScraper {
 
     // Normalize into NormalizedItem array
     return items.map((item): NormalizedItem => {
+      const sourceDate = item.publishedAt ? new Date(item.publishedAt) : null;
+      const validSourceDate = sourceDate && Number.isFinite(sourceDate.getTime()) ? sourceDate : null;
       return {
         sourceId: `example_${item.id}`,
         sourceSite: this.config.siteId,
@@ -128,7 +130,8 @@ export class ExampleScraper extends SiteScraper {
         contentHtml: textToParagraphHtml(item.text),
         link: item.link,
         mediaUrls: item.imageUrl ? [item.imageUrl] : [],
-        publishedAt: item.publishedAt ? new Date(item.publishedAt) : new Date(),
+        publishedAt: validSourceDate ?? new Date(),
+        publishedAtIsSource: validSourceDate !== null,
       };
     });
   }

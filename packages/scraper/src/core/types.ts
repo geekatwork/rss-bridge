@@ -24,6 +24,8 @@ export interface NormalizedItem {
   mediaUrls: string[];
   /** When the item was published */
   publishedAt: Date;
+  /** True only when publishedAt was parsed from the source, not assigned at scrape time. */
+  publishedAtIsSource?: boolean;
   /** For deduplication: hash of key fields */
   contentHash?: string;
   /** Optional raw payload for debugging */

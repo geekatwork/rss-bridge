@@ -63,6 +63,7 @@ describe("facebook graphApi", () => {
       "https://img.example/b.jpg",
     ]);
     expect(posts[0].postedAt.toISOString()).toBe("2026-01-02T03:04:05.000Z");
+    expect(posts[0].postedAtIsSource).toBe(true);
   });
 
   it("handles posts with minimal fields", async () => {

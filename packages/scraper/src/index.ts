@@ -307,14 +307,16 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
   }
 }
 
-async function runAllGroups(groups: GroupConfig[], scheduledAt: Date | null): Promise<void> {
+type RunTrigger = "initial" | "scheduled" | "recovery";
+
+async function runAllGroups(groups: GroupConfig[], scheduledAt: Date | null, trigger: RunTrigger): Promise<void> {
   for (const group of groups) {
     try {
       // Random delay between groups to avoid pattern detection
       const delay = getJitteredDelay(2000);
       await new Promise((r) => setTimeout(r, delay));
       const jobId = `scrape:${group.groupId}`;
-      diagnostics.started(jobId, scheduledAt);
+      diagnostics.started(jobId, scheduledAt, trigger);
       const started = performance.now();
       try {
         const success = await scrapeGroup(group);
@@ -330,6 +332,9 @@ async function runAllGroups(groups: GroupConfig[], scheduledAt: Date | null): Pr
 }
 
 let runInProgress = false;
+let recoveryDrainInProgress = false;
+const pendingRecoveries = new Map<string, () => Promise<void>>();
+const activeRecoveries = new Set<string>();
 const diagnostics = new SchedulerDiagnostics();
 const groupAlertStateByGroupId = new Map<string, GroupAlertState>();
 const pruneState: PruneState = {
@@ -339,7 +344,34 @@ const pruneState: PruneState = {
   lastError: null,
 };
 
-async function triggerRun(groups: GroupConfig[], trigger: "initial" | "scheduled", scheduledAt: Date | null = null): Promise<void> {
+function drainPendingRecoveries(): void {
+  if (runInProgress || recoveryDrainInProgress || pendingRecoveries.size === 0) return;
+  const [key, recover] = pendingRecoveries.entries().next().value as [string, () => Promise<void>];
+  pendingRecoveries.delete(key);
+  activeRecoveries.add(key);
+  recoveryDrainInProgress = true;
+  void recover()
+    .catch((error) => console.error(`Missed-run recovery failed for ${key}:`, error instanceof Error ? error.message : error))
+    .finally(() => {
+      activeRecoveries.delete(key);
+      recoveryDrainInProgress = false;
+      drainPendingRecoveries();
+    });
+}
+
+function queueRecovery(key: string, recover: () => Promise<void>): void {
+  if (activeRecoveries.has(key)) {
+    console.log(`[${new Date().toISOString()}] Coalescing missed execution for active recovery ${key}`);
+    return;
+  }
+  if (!pendingRecoveries.has(key)) {
+    pendingRecoveries.set(key, recover);
+    console.warn(`[${new Date().toISOString()}] Queued one catch-up run for missed schedule ${key}`);
+  }
+  drainPendingRecoveries();
+}
+
+async function triggerRun(groups: GroupConfig[], trigger: RunTrigger, scheduledAt: Date | null = null): Promise<void> {
   if (runInProgress) {
     for (const group of groups) diagnostics.skipped(`scrape:${group.groupId}`);
     console.warn(`[${new Date().toISOString()}] Skipping ${trigger} run because a scrape cycle is already in progress`);
@@ -348,13 +380,18 @@ async function triggerRun(groups: GroupConfig[], trigger: "initial" | "scheduled
 
   runInProgress = true;
   try {
-    await runAllGroups(groups, scheduledAt);
+    await runAllGroups(groups, scheduledAt, trigger);
   } finally {
     runInProgress = false;
+    drainPendingRecoveries();
   }
 }
 
-async function triggerPrune(retentionDays: number, scheduledAt: Date): Promise<void> {
+async function triggerPrune(
+  retentionDays: number,
+  scheduledAt: Date,
+  trigger: Exclude<RunTrigger, "initial"> = "scheduled"
+): Promise<void> {
   if (runInProgress) {
     diagnostics.skipped("prune");
     console.warn(`[${new Date().toISOString()}] Skipping prune run because a scrape cycle is already in progress`);
@@ -362,7 +399,7 @@ async function triggerPrune(retentionDays: number, scheduledAt: Date): Promise<v
   }
 
   runInProgress = true;
-  diagnostics.started("prune", scheduledAt);
+  diagnostics.started("prune", scheduledAt, trigger);
   const started = performance.now();
   pruneState.lastStartedAt = new Date().toISOString();
   pruneState.lastCompletedAt = null;
@@ -385,6 +422,7 @@ async function triggerPrune(retentionDays: number, scheduledAt: Date): Promise<v
     console.error(`[ALERT] Prune job failed and retention may not be enforced until the next successful run.`);
   } finally {
     runInProgress = false;
+    drainPendingRecoveries();
   }
 }
 
@@ -450,8 +488,11 @@ for (const [schedule, scheduledGroups] of groupsBySchedule.entries()) {
       if (!next) throw new Error(`No next run for active schedule: ${schedule}`);
       return next;
     }, allowanceMs, true);
-    task.on("execution:missed", () => diagnostics.missed(jobId));
   }
+  task.on("execution:missed", () => {
+    for (const group of scheduledGroups) diagnostics.missed(`scrape:${group.groupId}`);
+    queueRecovery(`scrape:${schedule}`, () => triggerRun(scheduledGroups, "recovery"));
+  });
 }
 
 const pruneTask = cron.schedule(pruneSchedule, (context) => {
@@ -463,7 +504,10 @@ diagnostics.register("prune", pruneSchedule, () => {
   if (!next) throw new Error(`No next run for active schedule: ${pruneSchedule}`);
   return next;
 }, 5 * 60 * 1000);
-pruneTask.on("execution:missed", () => diagnostics.missed("prune"));
+pruneTask.on("execution:missed", () => {
+  diagnostics.missed("prune");
+  queueRecovery("prune", () => triggerPrune(pruneRetentionDays, new Date(), "recovery"));
+});
 
 startHealthServer();
 if (process.env.NODE_ENV !== "test") startRuntimeDiagnostics();

@@ -870,7 +870,8 @@ export class FacebookScraper extends SiteScraper {
 
     return boundedFilteredPosts.map((post): NormalizedItem => {
       const cleanedText = cleanFacebookPostText(post.text || "", post.author || undefined);
-      const postedAt = post.time ? (parseTimestamp(post.time) || new Date()) : new Date();
+      const sourceDate = post.time ? parseTimestamp(post.time) : null;
+      const postedAt = sourceDate ?? new Date();
 
       return {
         sourceId: post.id,
@@ -882,6 +883,7 @@ export class FacebookScraper extends SiteScraper {
         link: post.link,
         mediaUrls: post.images,
         publishedAt: postedAt,
+        publishedAtIsSource: sourceDate !== null,
         rawPayload: { fbId: post.id, needsLinkResolve: post.needsLinkResolve, index: post.index },
       };
     });
@@ -1317,6 +1319,7 @@ export class FacebookScraper extends SiteScraper {
       link: post.link,
       mediaUrls: post.imageUrls,
       publishedAt: post.postedAt,
+      publishedAtIsSource: post.postedAtIsSource === true,
     };
   }
 }

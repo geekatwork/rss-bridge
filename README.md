@@ -157,6 +157,9 @@ The scraper logs JSON events alongside its existing scrape output:
 - `job_skipped_locked`: work skipped by the existing shared scrape/prune lock.
 - `job_missed`: cron reported a missed execution. The event records observation time;
   node-cron 4.2.1's missed-event date is not reliable as the missed scheduled time.
+  The scraper queues one immediate catch-up per missed scrape schedule (or prune job);
+  repeated misses for that same schedule are coalesced, and catch-ups wait for any
+  active scrape/prune cycle to finish.
 - `scheduler_runtime`: every 30 seconds, event-loop maximum/p99 delay, timer delay,
   and wall-clock drift relative to the monotonic clock. Delays/drift above 2 seconds
   produce warnings. These distinguish symptoms, not definitive causes of host suspension.
@@ -171,7 +174,9 @@ sequential scrape cycle (group count times the group timeout plus inter-group de
 Startup receives the same cycle allowance. Prune allows 5 minutes after its scheduled
 time. These are diagnostic budgets, not new execution timeouts; browser setup, database
 work, and cleanup can exceed them. Failed/skipped/missed runs do not extend the deadline.
-State is in memory and resets on process restart; no catch-up/retry behavior is added.
+Missed-run recovery state is in memory and resets on process restart; startup scraping
+continues to provide the existing restart behavior. This is not a durable distributed
+queue and does not guarantee recovery after a crash during catch-up.
 Docker health status alone does not trigger a restart under `restart: unless-stopped`.
 
 Inspect the health payload from inside the container:

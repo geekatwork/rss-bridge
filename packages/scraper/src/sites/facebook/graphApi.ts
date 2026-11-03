@@ -65,6 +65,7 @@ export async function fetchPostsViaApi(
       link: post.permalink_url || null,
       imageUrls: [...new Set(imageUrls)],
       postedAt: new Date(post.created_time),
+      postedAtIsSource: true,
     };
   });
 }

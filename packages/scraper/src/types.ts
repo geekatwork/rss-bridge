@@ -6,6 +6,7 @@ export interface NormalizedPost {
   link: string | null;
   imageUrls: string[];
   postedAt: Date;
+  postedAtIsSource?: boolean;
 }
 
 export interface GroupConfig {

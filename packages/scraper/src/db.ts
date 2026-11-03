@@ -30,15 +30,11 @@ interface PersistablePost {
   link: string | null;
   imageUrls: string[];
   postedAt: Date;
+  postedAtIsSource: boolean;
 }
 
 interface ExistingPostRow {
   source_post_id: string;
-}
-
-interface PgErrorLike {
-  code?: string;
-  constraint?: string;
 }
 
 function normalizeLink(link: string | null | undefined): string | null {
@@ -55,6 +51,9 @@ function normalizeLink(link: string | null | undefined): string | null {
 }
 
 async function persistPost(groupId: number, post: PersistablePost): Promise<number> {
+  if (!Number.isFinite(post.postedAt.getTime())) {
+    throw new Error(`Invalid publication date for source post: ${post.sourcePostId}`);
+  }
   const normalizedLink = normalizeLink(post.link);
 
   if (normalizedLink) {
@@ -67,21 +66,25 @@ async function persistPost(groupId: number, post: PersistablePost): Promise<numb
     );
     const linkRow = existingByLink.rows[0] ?? null;
     if (linkRow && linkRow.source_post_id !== post.sourcePostId) {
+      console.log(JSON.stringify({ event: "post_duplicate_skipped", groupId, sourcePostId: post.sourcePostId, reason: "canonical_link" }));
       return 0;
     }
   }
 
   try {
     const result = await pool.query(
-      `INSERT INTO posts (group_id, source_post_id, author_name, content_text, content_html, link, image_urls, posted_at, scraped_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+      `INSERT INTO posts (group_id, source_post_id, author_name, content_text, content_html, link, image_urls, posted_at, posted_at_is_source, scraped_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
        ON CONFLICT (source_post_id) DO UPDATE SET
          author_name = EXCLUDED.author_name,
          content_text = EXCLUDED.content_text,
          content_html = EXCLUDED.content_html,
          link = EXCLUDED.link,
          image_urls = EXCLUDED.image_urls,
+         posted_at = CASE WHEN EXCLUDED.posted_at_is_source THEN EXCLUDED.posted_at ELSE posts.posted_at END,
+         posted_at_is_source = posts.posted_at_is_source OR EXCLUDED.posted_at_is_source,
          scraped_at = NOW()
+       WHERE posts.group_id = EXCLUDED.group_id
        RETURNING id`,
       [
         groupId,
@@ -92,13 +95,19 @@ async function persistPost(groupId: number, post: PersistablePost): Promise<numb
         normalizedLink,
         JSON.stringify(post.imageUrls),
         post.postedAt,
+        post.postedAtIsSource,
       ]
     );
 
+    if (result.rowCount === 0) {
+      throw new Error(`Source post ${post.sourcePostId} belongs to another group; refusing update from group ${groupId}`);
+    }
     return result.rowCount ?? 0;
   } catch (error) {
-    const pgError = error as PgErrorLike;
-    if (pgError.code === "23505" && pgError.constraint === "uq_posts_link_non_null") {
+    if (typeof error === "object" && error !== null
+      && "code" in error && error.code === "23505"
+      && "constraint" in error && error.constraint === "uq_posts_link_non_null") {
+      console.log(JSON.stringify({ event: "post_duplicate_skipped", groupId, sourcePostId: post.sourcePostId, reason: "canonical_link_race" }));
       return 0;
     }
     throw error;
@@ -119,6 +128,7 @@ export async function upsertPosts(
       link: post.link,
       imageUrls: post.imageUrls,
       postedAt: post.postedAt,
+      postedAtIsSource: post.postedAtIsSource === true,
     });
     if (result > 0) upserted++;
   }
@@ -143,6 +153,7 @@ export async function upsertItems(
       link: item.link,
       imageUrls: item.mediaUrls,
       postedAt: item.publishedAt,
+      postedAtIsSource: item.publishedAtIsSource === true,
     });
     if (result > 0) upserted++;
   }
@@ -174,7 +185,7 @@ export async function pruneFacebookPosts(retentionDays = 7): Promise<number> {
 }
 
 /**
- * Returns the most recently scraped source post id for a group.
+ * Returns the newest published source post id for a group.
  * Used as a boundary marker so site scrapers can stop when they reach
  * content that has already been persisted.
  */
@@ -185,7 +196,7 @@ export async function getLatestScrapedSourcePostId(
     `SELECT source_post_id
      FROM posts
      WHERE group_id = $1
-     ORDER BY scraped_at DESC, id DESC
+     ORDER BY posted_at DESC, id DESC
      LIMIT 1`,
     [groupId]
   );

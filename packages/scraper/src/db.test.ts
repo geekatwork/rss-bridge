@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GroupConfig, NormalizedPost } from "./types.js";
 import type { NormalizedItem } from "./core/index.js";
 
@@ -14,13 +14,25 @@ vi.mock("pg", () => ({
   },
 }));
 
-import { ensureGroup, pruneFacebookPosts, upsertItems, upsertPosts } from "./db.js";
+import { ensureGroup, getLatestScrapedSourcePostId, pruneFacebookPosts, upsertItems, upsertPosts } from "./db.js";
+
+function makeItem(overrides: Partial<NormalizedItem> = {}): NormalizedItem {
+  return {
+    sourceId: "post-1", sourceSite: "facebook", title: null,
+    authorName: null, contentText: "content", contentHtml: null,
+    link: null, mediaUrls: [], publishedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
 
 describe("scraper db", () => {
   beforeEach(() => {
     queryMock.mockReset();
     endMock.mockReset();
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
   });
+
+  afterEach(() => vi.restoreAllMocks());
 
   it("ensureGroup upserts and returns id", async () => {
     queryMock.mockResolvedValue({ rows: [{ id: 42 }] });
@@ -41,12 +53,11 @@ describe("scraper db", () => {
     ]);
   });
 
-  it("upsertPosts counts only rows with rowCount > 0", async () => {
+  it("upsertPosts counts successful inserts and skips duplicate links", async () => {
     queryMock
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rowCount: 0 })
+      .mockRejectedValueOnce({ code: "23505", constraint: "uq_posts_link_non_null" })
       ;
 
     const posts: NormalizedPost[] = [
@@ -82,6 +93,7 @@ describe("scraper db", () => {
       "https://example.com/1",
       JSON.stringify(["https://example.com/a.jpg"]),
       new Date("2026-01-01T00:00:00.000Z"),
+      false,
     ]);
   });
 
@@ -116,6 +128,7 @@ describe("scraper db", () => {
       "https://example.com/post",
       JSON.stringify(["https://example.com/1.jpg", "https://example.com/2.jpg"]),
       new Date("2026-02-01T00:00:00.000Z"),
+      false,
     ]);
   });
 
@@ -149,6 +162,7 @@ describe("scraper db", () => {
       "https://www.wagneraustralia.com.au/mothers-day-2026/#",
       JSON.stringify([]),
       new Date("2026-02-01T00:00:00.000Z"),
+      false,
     ]);
   });
 
@@ -185,7 +199,7 @@ describe("scraper db", () => {
     expect(queryMock).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO posts"), expect.any(Array));
   });
 
-  it("silently skips when the unique link index rejects a concurrent duplicate", async () => {
+  it("logs and skips when the unique link index rejects a concurrent duplicate", async () => {
     queryMock
       .mockResolvedValueOnce({ rows: [] })
       .mockRejectedValueOnce({ code: "23505", constraint: "uq_posts_link_non_null" });
@@ -207,6 +221,60 @@ describe("scraper db", () => {
     const upserted = await upsertItems(11, items);
 
     expect(upserted).toBe(0);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('"reason":"canonical_link_race"'));
+  });
+
+  it("rejects cross-group identity conflicts instead of counting them as successful", async () => {
+    queryMock.mockResolvedValue({ rowCount: 0 });
+    await expect(upsertItems(22, [makeItem()])).rejects.toThrow(
+      "Source post post-1 belongs to another group; refusing update from group 22"
+    );
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringContaining("WHERE posts.group_id = EXCLUDED.group_id"), expect.any(Array)
+    );
+  });
+
+  it("only permits source-derived dates to update existing publication dates", async () => {
+    queryMock.mockResolvedValue({ rowCount: 1 });
+    await upsertItems(10, [makeItem({ publishedAtIsSource: true }), makeItem()]);
+    const sql = queryMock.mock.calls[0][0];
+    expect(sql).toContain("posted_at = CASE WHEN EXCLUDED.posted_at_is_source THEN EXCLUDED.posted_at ELSE posts.posted_at END");
+    expect(sql).toContain("posted_at_is_source = posts.posted_at_is_source OR EXCLUDED.posted_at_is_source");
+    expect(queryMock.mock.calls.map((call) => call[1][8])).toEqual([true, false]);
+  });
+
+  it("propagates source date provenance through the legacy post persistence path", async () => {
+    queryMock.mockResolvedValue({ rowCount: 1 });
+    await upsertPosts(10, [{
+      sourcePostId: "legacy", authorName: null, contentText: null, contentHtml: null,
+      link: null, imageUrls: [], postedAt: new Date("2026-01-01T00:00:00Z"), postedAtIsSource: true,
+    }]);
+    expect(queryMock.mock.calls[0][1][8]).toBe(true);
+  });
+
+  it("rejects invalid publication dates before writing any rows", async () => {
+    await expect(upsertItems(10, [makeItem({ publishedAt: new Date("invalid") })])).rejects.toThrow(
+      "Invalid publication date"
+    );
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "failure", { code: "23505", constraint: "posts_source_post_id_key" }, new Error("database unavailable")])(
+    "does not swallow unrelated database failures: %s", async (error) => {
+      queryMock.mockRejectedValue(error);
+      await expect(upsertItems(10, [makeItem()])).rejects.toBe(error);
+    }
+  );
+
+  it("selects the newest published boundary rather than the last processed row", async () => {
+    queryMock.mockResolvedValue({ rows: [{ source_post_id: "newest" }] });
+    expect(await getLatestScrapedSourcePostId(10)).toBe("newest");
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining("ORDER BY posted_at DESC, id DESC"), [10]);
+  });
+
+  it("returns no boundary for a group without persisted posts", async () => {
+    queryMock.mockResolvedValue({ rows: [] });
+    expect(await getLatestScrapedSourcePostId(10)).toBeNull();
   });
 
   it("pruneFacebookPosts deletes only rows older than the cutoff using a parameterized date", async () => {

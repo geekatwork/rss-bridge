@@ -107,6 +107,7 @@ describe("RedditScraper extractItems", () => {
     expect(items[0].contentHtml).toBe("<p>Body &lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quoted&quot;</p>");
     expect(items[0].link).toBe("https://reddit.com/r/typescript/comments/abc/post_title/");
     expect(items[0].mediaUrls).toEqual(["https://img.example/1.jpg"]);
+    expect(items[0].publishedAtIsSource).toBe(true);
 
     expect(await scraper.hasMorePages(context)).toBe(true);
   });

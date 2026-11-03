@@ -246,6 +246,7 @@ export function normalizeCompetitionsNzCards(cards: CompetitionsNzRawCard[], sit
       link,
       mediaUrls: card.imageUrl ? [card.imageUrl] : [],
       publishedAt: new Date(),
+      publishedAtIsSource: false,
       rawPayload: {
         position: card.position,
         badgeTexts: card.badgeTexts,

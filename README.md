@@ -216,9 +216,49 @@ npm run -w packages/scraper prune
 
 Post links are treated as unique after URL canonicalization.
 
-- Duplicate non-null links are ignored silently.
+- Duplicate non-null links are skipped with a structured `post_duplicate_skipped` log
+  (canonical-link match or unique-index race); full links/content are not logged.
 - Existing rows are not merged or updated when another post arrives with the same canonical link.
 - Repeat scrapes for the same `source_post_id` still follow the normal upsert path.
+- Source IDs remain globally unique. A same-ID update from another group is rejected
+  explicitly rather than overwriting the owning group's content.
+- The database is the authoritative deduplication layer: the pre-insert canonical-link
+  check avoids unnecessary writes, and unique constraints enforce identity/link
+  integrity under concurrency. No additional engine-wide content-hash deduplication
+  is performed. Plugins may deduplicate their own collected pages.
+
+### Publication Dates and Incremental Boundaries
+
+Scrapers mark a parsed source publication timestamp with `publishedAtIsSource: true`
+(`postedAtIsSource` on the legacy post path). Missing flags mean fallback/unknown.
+New rows always store a timestamp, but repeat fallback observations cannot change
+the stored publication date. Source-derived observations can correct it; fallback
+observations cannot downgrade its provenance. Existing rows start with unknown
+provenance because their original timestamp quality cannot be inferred reliably.
+Competitions NZ currently supplies scrape-time fallback dates.
+
+Incremental boundary selection uses publication date descending, then row ID
+descending for ties, rather than the timestamp of the last processed insert.
+This avoids selecting the tail of a newest-to-oldest persistence batch.
+
+Before deploying this change to an existing database, back up the database and apply
+the additive, repeatable timestamp-provenance migration:
+
+```bash
+docker compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < db/03-post-timestamp-provenance.sql
+```
+
+PostgreSQL entrypoint scripts run automatically only for new volumes. Existing
+volumes require the explicit command above; it does not delete or backfill dates.
+
+The optional PostgreSQL integrity test uses a uniquely named isolated schema and
+removes it afterward. Supply a test database URL with schema-creation permission:
+
+```bash
+SCRAPER_TEST_DATABASE_URL=<test-database-url> npm run -w packages/scraper test:unit -- src/db.integration.test.ts
+```
+
+Without that variable the integration test is skipped; the regular unit tests still run.
 
 ## TT-RSS Docker Networking
 

@@ -98,6 +98,7 @@ export class RedditScraper extends SiteScraper {
               return u && !u.startsWith("/r/") ? [u] : [];
             })(),
             publishedAt: new Date(((post.created_utc as number) || 0) * 1000),
+            publishedAtIsSource: typeof post.created_utc === "number" && Number.isFinite(post.created_utc),
             rawPayload: { score: post.score, num_comments: post.num_comments },
           };
         });

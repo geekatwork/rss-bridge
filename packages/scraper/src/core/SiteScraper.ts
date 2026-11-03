@@ -19,7 +19,7 @@ export class RecoverablePageError extends Error {
  * 4. Resolve external links if needed
  * 5. Clean up resources
  *
- * The engine handles: retries, timeouts, deduplication, persistence.
+ * The scheduled orchestrator handles timeouts and database persistence/deduplication.
  */
 export abstract class SiteScraper {
   protected config: SiteConfig;

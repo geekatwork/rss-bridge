@@ -16,6 +16,7 @@ CREATE TABLE posts (
     link TEXT,
     image_urls JSONB DEFAULT '[]'::jsonb,
     posted_at TIMESTAMPTZ NOT NULL,
+    posted_at_is_source BOOLEAN NOT NULL DEFAULT FALSE,
     scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

@@ -48,6 +48,7 @@ describe("FacebookScraper API mode", () => {
         link: "https://example.com/post/1",
         imageUrls: ["https://example.com/image.jpg"],
         postedAt: new Date("2026-01-01T00:00:00.000Z"),
+        postedAtIsSource: true,
       },
     ]);
 
@@ -73,6 +74,7 @@ describe("FacebookScraper API mode", () => {
     expect(items[0].sourceId).toBe("post_1");
     expect(items[0].sourceSite).toBe("facebook");
     expect(items[0].authorName).toBe("Author");
+    expect(items[0].publishedAtIsSource).toBe(true);
   });
 
   it("fetchListing throws if groupIds are missing", async () => {

@@ -14,6 +14,7 @@
     "test:smoke": "bash scripts/test-smoke.sh",
     "db:migrate": "bash scripts/migrate-database.sh",
     "test:migrations": "bash scripts/test-migrations.sh",
+    "test:retention": "bash scripts/test-facebook-retention.sh",
     "test:all": "npm run test:build && npm run test:unit && npm run test:smoke"
   },
   "workspaces": [

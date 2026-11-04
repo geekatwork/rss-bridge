@@ -206,6 +206,33 @@ describe("scraper index startup", () => {
     expect(scheduleMock).toHaveBeenCalledWith("0 3 * * *", expect.any(Function));
   });
 
+  it.each(["facebook.com", "www.facebook.com", "m.facebook.com", "mbasic.facebook.com"])(
+    "infers Facebook groups on %s",
+    async (host) => {
+      const url = `https://${host}/groups/12345`;
+      process.env.SCRAPE_GROUPS = JSON.stringify([{ groupId: "12345", name: "Group", url }]);
+      await import("./index.js");
+      await flush();
+      await flush();
+      expect(ensureGroupMock).toHaveBeenCalledWith(
+        expect.objectContaining({ siteId: "facebook", url })
+      );
+    }
+  );
+
+  it.each(["https://facebook.com.evil.test/groups/123", "https://facebook.com/pages/123"])(
+    "does not infer Facebook for %s",
+    async (url) => {
+      process.env.SCRAPE_GROUPS = JSON.stringify([{ groupId: "12345", name: "Group", url }]);
+      await import("./index.js");
+      await flush();
+      await flush();
+      expect(ensureGroupMock).toHaveBeenCalledWith(
+        expect.objectContaining({ siteId: "unknown", url })
+      );
+    }
+  );
+
   it("uses explicit siteId and id fallback, and does not upsert when no items", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       {

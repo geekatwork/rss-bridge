@@ -13,6 +13,7 @@ import type { GroupConfig } from "./types.js";
 import { SchedulerDiagnostics, startRuntimeDiagnostics } from "./schedulerDiagnostics.js";
 import { scheduleWithRecovery } from "./recoverableSchedule.js";
 import { checkDatabase, getDatabaseHealth } from "./database.js";
+import { isFacebookGroupUrl } from "./facebookGroups.js";
 
 interface GroupConfigInput {
   groupId?: string;
@@ -72,10 +73,12 @@ interface PruneState {
 }
 
 function inferSiteIdFromUrl(url: string): string {
+  if (isFacebookGroupUrl(url)) return "facebook";
   try {
     const host = new URL(url).hostname.toLowerCase();
     const normalized = host.replace(/^www\./, "").replace(/^m\./, "");
-    return normalized.split(".")[0] || "unknown";
+    const inferred = normalized.split(".")[0] || "unknown";
+    return inferred === "facebook" ? "unknown" : inferred;
   } catch {
     return "unknown";
   }

@@ -2,6 +2,7 @@ import { query } from "./database.js";
 import type { NormalizedPost, GroupConfig } from "./types.js";
 import type { NormalizedItem } from "./core/index.js";
 import { canonicalizeUrl } from "./core/utils.js";
+import { FACEBOOK_GROUP_URL_PATTERN } from "./facebookGroups.js";
 
 export { closeDb } from "./database.js";
 
@@ -163,16 +164,9 @@ export async function pruneFacebookPosts(retentionDays = 7): Promise<number> {
      USING groups AS g
      WHERE p.group_id = g.id
        AND p.posted_at < $1
-       AND (
-         LOWER(g.url) LIKE 'https://www.facebook.com/groups/%'
-         OR LOWER(g.url) LIKE 'http://www.facebook.com/groups/%'
-         OR LOWER(g.url) LIKE 'https://m.facebook.com/groups/%'
-         OR LOWER(g.url) LIKE 'http://m.facebook.com/groups/%'
-         OR LOWER(g.url) LIKE 'https://mbasic.facebook.com/groups/%'
-         OR LOWER(g.url) LIKE 'http://mbasic.facebook.com/groups/%'
-       )
+       AND g.url ~* $2
      RETURNING p.id`,
-    [cutoffDate]
+    [cutoffDate, FACEBOOK_GROUP_URL_PATTERN]
   );
 
   return result.rowCount ?? 0;

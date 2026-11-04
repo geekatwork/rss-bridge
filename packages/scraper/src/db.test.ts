@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GroupConfig, NormalizedPost } from "./types.js";
 import type { NormalizedItem } from "./core/index.js";
+import { FACEBOOK_GROUP_URL_PATTERN } from "./facebookGroups.js";
 
 const { queryMock, endMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
@@ -288,10 +289,10 @@ describe("scraper db", () => {
     expect(deleted).toBe(3);
     expect(queryMock).toHaveBeenCalledWith(
       expect.stringContaining("DELETE FROM posts AS p"),
-      [new Date("2026-02-01T12:00:00.000Z")]
+      [new Date("2026-02-01T12:00:00.000Z"), FACEBOOK_GROUP_URL_PATTERN]
     );
     expect(queryMock).toHaveBeenCalledWith(
-      expect.stringContaining("facebook.com/groups/%"),
+      expect.stringContaining("g.url ~* $2"),
       expect.any(Array)
     );
 

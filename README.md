@@ -64,13 +64,45 @@ Schema uses source-generic identifiers:
    - `PRUNE_RETENTION_DAYS=7` (optional; Facebook groups only)
    - `PRUNE_SCHEDULE=0 3 * * *` (optional; daily prune cron)
 
-2. Start the stack:
+2. Provision the external Docker resources **before the first startup**:
+
+   ```bash
+   docker network inspect rss-bridge
+   docker volume inspect rss-bridge_pgdata
+   ```
+
+   If either reports "not found", create only that missing resource:
+
+   ```bash
+   docker network create rss-bridge
+   docker volume create rss-bridge_pgdata
+   ```
+
+   Reuse existing resources; do not remove or recreate them. In particular,
+   `rss-bridge_pgdata` may already contain production data. If inspection fails
+   for another reason (for example Docker is unavailable or access is denied),
+   resolve that error before continuing. For a known legacy database volume
+   under a different name, stop here and plan its migration rather than starting
+   with an empty replacement.
+
+   These resources are deliberately external: Compose does not create them and
+   `docker compose down` does not remove them. The `rss-bridge` network is shared
+   with readers such as TT-RSS; keep its name and attach the reader to the same
+   network so it can reach `http://feed-generator/feed/<groupId>`. Provisioning
+   does not copy data or change existing volume ownership/permissions.
+
+3. Start the stack:
+
+   For an existing database, follow the
+   [existing-volume migration procedure](#existing-volume-database-migrations)
+   before deploying newer application images; init scripts run only on empty
+   data directories.
 
    ```bash
    docker compose up -d
    ```
 
-3. Verify services:
+4. Verify services:
 
    ```bash
    curl http://localhost:3100/health
@@ -79,7 +111,7 @@ Schema uses source-generic identifiers:
    docker compose logs scraper --tail=100
    ```
 
-4. Optional: start pgAdmin for database inspection:
+5. Optional: start pgAdmin for database inspection:
 
    ```bash
    docker compose --profile tools up -d pgadmin

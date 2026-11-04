@@ -1,92 +1,68 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+project="rss-bridge-smoke-$(date +%s)-$$"
+compose=(docker compose --env-file /dev/null -p "$project" -f tests/smoke/docker-compose.yml)
+scraper_service=scraper
+group_id=smoke-test-group
+case "${1:-}" in
+  "") ;;
+  --broken-config) scraper_service=scraper-broken; group_id=broken-test-group ;;
+  *) echo "Usage: $0 [--broken-config]" >&2; exit 1 ;;
+esac
+if [ "$#" -gt 1 ]; then echo "Too many arguments" >&2; exit 1; fi
 
-BASE_URL="${BASE_URL:-http://localhost:${FEED_PORT:-3100}}"
-GROUP_SOURCE_ID="smoke-test-group"
-POST_SOURCE_ID="smoke-test-post"
-
-wait_for_health() {
-  local url="$1"
-  for attempt in {1..30}; do
-    if curl -fsS "$url" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 2
-  done
-  return 1
+cleanup() {
+  local result=$?
+  trap - EXIT
+  if [ "$result" -ne 0 ]; then
+    "${compose[@]}" logs --no-color --tail=80 >&2
+  fi
+  "${compose[@]}" down --volumes --remove-orphans --rmi local || result=1
+  exit "$result"
 }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-echo "[test-smoke] Starting docker services..."
-docker compose up -d db feed-generator scraper >/dev/null
+echo "[test-smoke] Building and starting isolated project $project..."
+"${compose[@]}" up -d --build --wait --wait-timeout 120 db fixture feed-generator
+"${compose[@]}" up -d --build scraper scraper-broken
 
-echo "[test-smoke] Waiting for feed-generator health endpoint..."
-if ! wait_for_health "$BASE_URL/health"; then
-  echo "[test-smoke] feed-generator did not become healthy in time"
-  exit 1
-fi
+echo "[test-smoke] Requiring a completed, healthy scraper run..."
+"${compose[@]}" exec -T "$scraper_service" node /smoke/assert-scraper.mjs success "$group_id"
 
-echo "[test-smoke] Seeding deterministic smoke-test records..."
-docker compose exec -T db sh -lc 'set -e; PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
-DELETE FROM posts
-WHERE source_post_id = 'smoke-test-post';
-
-DELETE FROM groups
-WHERE (source_id = 'smoke-test-group' OR char_length(source_id) = 0)
-  AND name = 'Smoke Test Group';
-
-INSERT INTO groups (source_id, name, url)
-VALUES ('smoke-test-group', 'Smoke Test Group', 'https://example.com/groups/smoke-test-group')
-ON CONFLICT (source_id) DO UPDATE
-SET name = EXCLUDED.name,
-    url = EXCLUDED.url;
-
-INSERT INTO posts (group_id, source_post_id, author_name, content_text, content_html, link, image_urls, posted_at)
-SELECT g.id,
-  'smoke-test-post',
-  'Smoke Tester',
-  'Smoke test post content',
-  '<p>Smoke test post content</p>',
-  'https://example.com/posts/smoke-test-post',
-  '[]'::jsonb,
-       NOW()
-FROM groups g
-WHERE g.source_id = 'smoke-test-group'
-ON CONFLICT (source_post_id) DO UPDATE
-SET group_id = EXCLUDED.group_id,
-    author_name = EXCLUDED.author_name,
-    content_text = EXCLUDED.content_text,
-    content_html = EXCLUDED.content_html,
-    link = EXCLUDED.link,
-    image_urls = EXCLUDED.image_urls,
-    scraped_at = NOW();
+echo "[test-smoke] Checking source-derived database records (no manual seeding)..."
+"${compose[@]}" exec -T db psql -v ON_ERROR_STOP=1 -U smoke -d smoke <<'SQL'
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM posts) <> 1 THEN
+    RAISE EXCEPTION 'Expected exactly one scraped post';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM posts p JOIN groups g ON g.id = p.group_id
+    WHERE g.source_id = 'smoke-test-group'
+      AND p.source_post_id = 'example_item-0'
+      AND p.author_name = 'Smoke Tester'
+      AND p.content_text = 'Content extracted from the local smoke fixture.'
+      AND p.content_html = '<p>Content extracted from the local smoke fixture.</p>'
+      AND p.link = 'http://fixture:8080/posts/smoke-test-post'
+      AND p.posted_at = '2026-01-01T12:00:00Z'::timestamptz
+      AND p.posted_at_is_source
+  ) THEN
+    RAISE EXCEPTION 'Scraped fixture content was not persisted correctly';
+  END IF;
+END $$;
 SQL
 
-echo "[test-smoke] Checking /health response..."
-health_json="$(curl -fsS "$BASE_URL/health")"
-if [[ "$health_json" != *'"status":"ok"'* ]]; then
-  echo "[test-smoke] Unexpected /health response: $health_json"
-  exit 1
-fi
+echo "[test-smoke] Checking database readiness, discovery and rendered RSS..."
+"${compose[@]}" exec -T feed-generator node /smoke/assert-feed.mjs
 
-echo "[test-smoke] Checking /feeds response..."
-feeds_json="$(curl -fsS "$BASE_URL/feeds")"
-if [[ "$feeds_json" != *"\"groupId\":\"$GROUP_SOURCE_ID\""* ]]; then
-  echo "[test-smoke] Expected smoke group not found in /feeds response"
-  echo "$feeds_json"
-  exit 1
-fi
-
-echo "[test-smoke] Checking /feed/$GROUP_SOURCE_ID response..."
-rss_xml="$(curl -fsS "$BASE_URL/feed/$GROUP_SOURCE_ID")"
-if [[ "$rss_xml" != *"<rss"* ]]; then
-  echo "[test-smoke] Expected RSS XML payload"
-  exit 1
-fi
-if [[ "$rss_xml" != *"$POST_SOURCE_ID"* ]]; then
-  echo "[test-smoke] Expected seeded post ID not present in feed output"
+echo "[test-smoke] Checking broken scraper health and success-check rejection..."
+"${compose[@]}" exec -T scraper-broken node /smoke/assert-scraper.mjs failure
+if "${compose[@]}" exec -T scraper-broken node /smoke/assert-scraper.mjs success broken-test-group; then
+  echo "[test-smoke] ERROR: broken scraper passed the success check" >&2
   exit 1
 fi
 

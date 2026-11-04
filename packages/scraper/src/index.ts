@@ -240,6 +240,7 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
       enabled: true,
       options: {
         groupIds: [config.groupId],
+        ...(siteId === "example-site" ? { sourceUrl: config.url } : {}),
         cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
         stopAtSourceId: stopAtSourceId ?? undefined,
         ...(siteId === "facebook"

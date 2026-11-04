@@ -696,15 +696,17 @@ export class CompetitionsNzScraper extends SiteScraper {
   }
 
   async shutdown(context: ScraperContext): Promise<void> {
-    if (this.page) {
-      await this.page.close().catch(() => undefined);
-      this.page = undefined;
+    const page = this.page;
+    this.page = undefined;
+    try {
+      if (page && !page.isClosed()) await page.close();
+    } finally {
+      this.listingLoaded = false;
+      this.usePagingFallback = false;
+      this.nextPageUrl = null;
+      this.seenSourceIds.clear();
+      this.hitBoundary = false;
     }
-    this.listingLoaded = false;
-    this.usePagingFallback = false;
-    this.nextPageUrl = null;
-    this.seenSourceIds.clear();
-    this.hitBoundary = false;
     context.logger.debug({ site: this.config.siteId }, "Competitions NZ scraper shutdown complete");
   }
 }

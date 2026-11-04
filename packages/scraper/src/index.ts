@@ -68,24 +68,6 @@ interface PruneState {
   lastError: string | null;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setNodeTimeout(() => {
-      reject(new TimeoutError(`Timed out after ${timeoutMs}ms: ${label}`));
-    }, timeoutMs);
-
-    promise
-      .then((value) => {
-        clearNodeTimeout(timer);
-        resolve(value);
-      })
-      .catch((error) => {
-        clearNodeTimeout(timer);
-        reject(error);
-      });
-  });
-}
-
 function inferSiteIdFromUrl(url: string): string {
   try {
     const host = new URL(url).hostname.toLowerCase();
@@ -225,38 +207,39 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
   const siteId = config.siteId || inferSiteIdFromUrl(config.url);
   const groupTimeoutMs = parsePositiveInteger(process.env.SCRAPE_GROUP_TIMEOUT_MS, 20 * 60 * 1000);
   const alertState = getGroupAlertState(config.groupId, config.name);
+  const controller = new AbortController();
+  const engine = new ScrapeEngine();
   console.log(`[${new Date().toISOString()}] Scraping group: ${config.name} (${config.groupId}) via ${siteId}`);
 
-  const groupId = await ensureGroup(config);
-  const stopAtSourceId = await getLatestScrapedSourcePostId(groupId);
-  const facebookBoundaryFallbackLimit = parsePositiveInteger(process.env.FACEBOOK_BOUNDARY_FALLBACK_LIMIT, 50);
+  const run = async (): Promise<boolean> => {
+    const groupId = await ensureGroup(config);
+    controller.signal.throwIfAborted();
+    const stopAtSourceId = await getLatestScrapedSourcePostId(groupId);
+    controller.signal.throwIfAborted();
+    const facebookBoundaryFallbackLimit = parsePositiveInteger(process.env.FACEBOOK_BOUNDARY_FALLBACK_LIMIT, 50);
 
-  const engine = new ScrapeEngine();
-  await engine.init();
-  engine.registerSite({
-    siteId,
-    name: config.name,
-    enabled: true,
-    options: {
-      groupIds: [config.groupId],
-      cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
-      stopAtSourceId: stopAtSourceId ?? undefined,
-      ...(siteId === "facebook"
-        ? {
-          boundaryFallbackLimit: facebookBoundaryFallbackLimit,
-          maxCollectedPosts: facebookBoundaryFallbackLimit,
-        }
-        : {}),
-    },
-  });
+    await engine.init(controller.signal);
+    controller.signal.throwIfAborted();
+    engine.registerSite({
+      siteId,
+      name: config.name,
+      enabled: true,
+      options: {
+        groupIds: [config.groupId],
+        cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
+        stopAtSourceId: stopAtSourceId ?? undefined,
+        ...(siteId === "facebook"
+          ? {
+            boundaryFallbackLimit: facebookBoundaryFallbackLimit,
+            maxCollectedPosts: facebookBoundaryFallbackLimit,
+          }
+          : {}),
+      },
+    });
 
-  try {
     console.log(`  Running ${siteId} scraper...`);
-    const result = await withTimeout(
-      engine.scrapeOne(siteId),
-      groupTimeoutMs,
-      `${config.name} (${config.groupId}) via ${siteId}`
-    );
+    const result = await engine.scrapeOne(siteId, controller.signal);
+    controller.signal.throwIfAborted();
     console.log(`  Scraper returned ${result.itemsExtracted} items`);
     if (result.errors.length > 0) {
       console.warn(`  Scraper errors:`, result.errors);
@@ -289,20 +272,47 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
 
     if (result.items.length > 0) {
       const upserted = await upsertItems(groupId, result.items);
+      controller.signal.throwIfAborted();
       console.log(`  Upserted ${upserted} items into database`);
     } else {
       console.log(`  No items found for ${config.name}`);
     }
     return result.errors.length === 0;
+  };
+
+  let timeout: ReturnType<typeof setNodeTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setNodeTimeout(() => {
+      const error = new TimeoutError(`Timed out after ${groupTimeoutMs}ms: ${config.name} (${config.groupId})`);
+      controller.abort(error);
+      void engine.shutdown().catch((shutdownError: unknown) => {
+        console.error(`Browser shutdown failed for ${config.name} (${config.groupId}):`,
+          shutdownError instanceof Error ? shutdownError.message : shutdownError);
+      });
+      reject(error);
+    }, groupTimeoutMs);
+  });
+  const runPromise = run();
+
+  try {
+    return await Promise.race([runPromise, timedOut]);
   } catch (err) {
-    console.error(`  Scraper failed:`, err instanceof Error ? err.message : err);
     if (err instanceof TimeoutError) {
-      const alertMessage = `[ALERT] ${config.name} (${config.groupId}) scrape exceeded timeout (${groupTimeoutMs}ms). Browser/session likely stalled; moving on to next group.`;
+      const alertMessage = `[ALERT] ${config.name} (${config.groupId}) scrape exceeded timeout (${groupTimeoutMs}ms); waiting for active work to stop before starting another group.`;
       setGroupAlert(config.groupId, config.name, "timeout", alertMessage);
       console.error(alertMessage);
+      try {
+        await runPromise;
+      } catch (settleError) {
+        console.error(`Timed-out scrape settled with an error for ${config.name} (${config.groupId}):`,
+          settleError instanceof Error ? settleError.message : settleError);
+      }
+    } else {
+      console.error(`  Scraper failed:`, err instanceof Error ? err.message : err);
     }
     return false;
   } finally {
+    if (timeout) clearNodeTimeout(timeout);
     await engine.shutdown();
   }
 }

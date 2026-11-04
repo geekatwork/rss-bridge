@@ -4,6 +4,7 @@ import type { NormalizedItem, ScraperContext, SiteConfig } from "./types.js";
 
 class ControlledScraper extends SiteScraper {
   public listingCalls = 0;
+  public initCalls = 0;
   public nextCalls = 0;
   public shutdownCalls = 0;
   public throwOnInit = false;
@@ -22,6 +23,7 @@ class ControlledScraper extends SiteScraper {
   }
 
   async init(_context: ScraperContext): Promise<void> {
+    this.initCalls++;
     if (this.throwOnInit) {
       throw new Error("init failed");
     }
@@ -247,12 +249,46 @@ describe("SiteScraper run lifecycle", () => {
     const scraper = new ControlledScraper(config, []);
     scraper.throwOnInit = true;
     scraper.throwOnShutdown = true;
+    const context = makeContext();
+    const logError = vi.spyOn(context.logger, "error");
 
-    const result = await scraper.run(makeContext());
+    const result = await scraper.run(context);
 
     expect(result.itemsExtracted).toBe(0);
     expect(result.errors).toContain("init failed");
     expect(result.errors).toContain("Shutdown: shutdown failed");
+    expect(logError).toHaveBeenCalledWith(
+      expect.objectContaining({ site: "test-site", jobId: "job-1", error: "shutdown failed" }),
+      "Error during shutdown"
+    );
+  });
+
+  it("stops a run when its cancellation signal is aborted and still shuts down", async () => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")]]);
+    const controller = new AbortController();
+    controller.abort(new Error("scrape deadline exceeded"));
+
+    const result = await scraper.run(makeContext({ signal: controller.signal }));
+
+    expect(scraper.initCalls).toBe(0);
+    expect(scraper.listingCalls).toBe(0);
+    expect(scraper.shutdownCalls).toBe(1);
+    expect(result.errors).toContain("scrape deadline exceeded");
+  });
+
+  it("does not advance pagination when cancellation occurs during a page request", async () => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")], [makeItem("b")]]);
+    const controller = new AbortController();
+    vi.spyOn(scraper, "fetchListing").mockImplementation(async () => {
+      controller.abort(new Error("scrape cancelled"));
+    });
+
+    const result = await scraper.run(makeContext({ signal: controller.signal }));
+
+    expect(scraper.listingCalls).toBe(0);
+    expect(scraper.nextCalls).toBe(0);
+    expect(scraper.shutdownCalls).toBe(1);
+    expect(result.errors[0]).toContain("scrape cancelled");
   });
 
   it("respects maxItems and exits early", async () => {

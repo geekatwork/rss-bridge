@@ -184,7 +184,9 @@ export class ExampleScraper extends SiteScraper {
    */
   async shutdown(context: ScraperContext): Promise<void> {
     if (this.page) {
-      await this.page.close().catch(() => {});
+      const page = this.page;
+      this.page = undefined;
+      if (!page.isClosed()) await page.close();
     }
     context.logger.debug({ site: this.config.siteId }, "Shutdown complete");
   }

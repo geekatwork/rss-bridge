@@ -39,6 +39,8 @@ export interface NormalizedItem {
 export interface ScraperContext {
   /** Puppeteer browser instance shared across all sites */
   browser: Browser;
+  /** Aborted when the orchestrator's bounded scrape deadline expires. */
+  signal?: AbortSignal;
   /** Current page if one is active */
   page?: Page;
   /** Structured logger (pino) */

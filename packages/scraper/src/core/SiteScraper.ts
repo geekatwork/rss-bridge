@@ -95,6 +95,7 @@ export abstract class SiteScraper {
 
     try {
       context.logger.info({ site: this.config.siteId }, "Initializing scraper");
+      context.signal?.throwIfAborted();
       await this.init(context);
 
       let pageCount = 0;
@@ -111,15 +112,18 @@ export abstract class SiteScraper {
 
       // Pagination loop
       while (pageCount < maxPages) {
+        context.signal?.throwIfAborted();
         let step = "fetch";
         let pageFailed = false;
         try {
           context.logger.debug({ site: this.config.siteId, page: pageCount + 1 }, "Fetching listing");
           await this.fetchListing(context);
+          context.signal?.throwIfAborted();
 
           step = "extract";
           context.logger.debug({ site: this.config.siteId, page: pageCount + 1 }, "Extracting items");
           const items = await this.extractItems(context);
+          context.signal?.throwIfAborted();
           context.logger.info({ site: this.config.siteId, page: pageCount + 1, count: items.length }, "Extracted items");
 
           if (items.length > 0) {
@@ -128,6 +132,7 @@ export abstract class SiteScraper {
             const unresolvedItems = items.filter((item) => !item.link);
             try {
               await this.resolveLinks(context, items);
+              context.signal?.throwIfAborted();
             } finally {
               linksResolved += unresolvedItems.filter((item) => item.link).length;
               linksFailed += items.filter((item) => !item.link).length;
@@ -153,13 +158,16 @@ export abstract class SiteScraper {
 
         try {
           step = "hasMorePages";
-          if (!(await this.hasMorePages(context))) {
+          const hasMorePages = await this.hasMorePages(context);
+          context.signal?.throwIfAborted();
+          if (!hasMorePages) {
             context.logger.info({ site: this.config.siteId }, "No more pages or max items reached");
             break;
           }
 
           step = "nextPage";
           await this.nextPage(context);
+          context.signal?.throwIfAborted();
           pageCount++;
         } catch (error) {
           recordPageError(step, error);
@@ -177,7 +185,7 @@ export abstract class SiteScraper {
         await this.shutdown(context);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        context.logger.error({ site: this.config.siteId, error: msg }, "Error during shutdown");
+        context.logger.error({ site: this.config.siteId, jobId: context.jobId, error: msg }, "Error during shutdown");
         errors.push(`Shutdown: ${msg}`);
       }
     }

@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Page } from "puppeteer";
+import { CompetitionsNzScraper } from "./competitions-nz/CompetitionsNzScraper.js";
 import { FacebookScraper } from "./facebook/FacebookScraper.js";
 import { RedditScraper } from "./reddit/RedditScraper.js";
 import { ExampleScraper } from "./ExampleScraper.js";
-import type { ScraperContext, SiteConfig } from "../core/types.js";
+import { SiteScraper, type ScraperContext, type SiteConfig } from "../core/index.js";
 
 function makeContext(overrides: Partial<ScraperContext> = {}): ScraperContext {
   const loggerStub = {
@@ -21,6 +23,18 @@ function makeContext(overrides: Partial<ScraperContext> = {}): ScraperContext {
     config: {},
     ...overrides,
   };
+}
+
+async function expectPageCloseFailureToSurface(scraper: SiteScraper): Promise<void> {
+  const closeError = new Error("page close failed");
+  const page = {
+    isClosed: vi.fn(() => false),
+    close: vi.fn().mockRejectedValue(closeError),
+  } as unknown as Page;
+  (scraper as unknown as { page?: Page }).page = page;
+
+  await expect(scraper.shutdown(makeContext())).rejects.toThrow(closeError);
+  expect(page.close).toHaveBeenCalledTimes(1);
 }
 
 describe("FacebookScraper", () => {
@@ -46,6 +60,10 @@ describe("FacebookScraper", () => {
   it("shutdown without page does not throw", async () => {
     const scraper = new FacebookScraper(cfg);
     await expect(scraper.shutdown(makeContext())).resolves.toBeUndefined();
+  });
+
+  it("surfaces page close failures during shutdown", async () => {
+    await expectPageCloseFailureToSurface(new FacebookScraper(cfg));
   });
 });
 
@@ -118,5 +136,22 @@ describe("ExampleScraper", () => {
   it("shutdown without page does not throw", async () => {
     const scraper = new ExampleScraper(cfg);
     await expect(scraper.shutdown(makeContext())).resolves.toBeUndefined();
+  });
+
+  it("surfaces page close failures during shutdown", async () => {
+    await expectPageCloseFailureToSurface(new ExampleScraper(cfg));
+  });
+});
+
+describe("CompetitionsNzScraper", () => {
+  const cfg: SiteConfig = {
+    siteId: "competitions-nz",
+    name: "Competitions NZ",
+    enabled: true,
+    options: {},
+  };
+
+  it("surfaces page close failures during shutdown", async () => {
+    await expectPageCloseFailureToSurface(new CompetitionsNzScraper(cfg));
   });
 });

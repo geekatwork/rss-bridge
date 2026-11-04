@@ -171,9 +171,12 @@ Successful empty scrapes count as success; reported scraper errors do not.
 
 Freshness allows the next cron occurrence plus 10 minutes of jitter and a full
 sequential scrape cycle (group count times the group timeout plus inter-group delay).
-Startup receives the same cycle allowance. Prune allows 5 minutes after its scheduled
-time. These are diagnostic budgets, not new execution timeouts; browser setup, database
-work, and cleanup can exceed them. Failed/skipped/missed runs do not extend the deadline.
+Startup receives the same cycle allowance. Each group's `SCRAPE_GROUP_TIMEOUT_MS`
+(default 20 minutes) covers database setup, browser initialization, scraping, persistence,
+and cleanup. On timeout, the scraper aborts the run and closes its browser. It waits for
+in-flight work to settle before releasing the shared run lock, so a non-cancellable
+operation can keep later groups queued until it finishes. Prune allows 5 minutes after
+its scheduled time. Failed/skipped/missed runs do not extend the freshness deadline.
 Missed-run recovery state is in memory and resets on process restart; startup scraping
 continues to provide the existing restart behavior. This is not a durable distributed
 queue and does not guarantee recovery after a crash during catch-up.

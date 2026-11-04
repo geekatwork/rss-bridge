@@ -49,6 +49,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify Docker production images
+        run: npm run test:docker-images
+
       - name: Prepare env file
         run: |
           SMOKE_DB_PASSWORD="smoke_db_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"

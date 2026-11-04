@@ -344,6 +344,30 @@ After that, TT-RSS can use feed URLs like:
 
 ## Redeploying to Docker
 
+Both service images install dependencies with `npm ci` from the root workspace
+lockfile, scoped to the service being built. Build stages include development
+tools; final images omit development and optional dependencies (including the
+optional TypeScript peer), preserving the workspace layout for nested dependencies.
+Chromium is installed only in the scraper runtime; Puppeteer's separate browser
+download is disabled.
+
+The scraper still runs as UID/GID `10001:10001`. Application files are root-owned
+and readable by that user; only the browser cache needs writable ownership. Builds
+do not recursively change ownership of application files or dependencies.
+Container working directories are `/app/packages/scraper` and
+`/app/packages/feed-generator`; cookie mounts remain at `/app/cookies`.
+
+Validate both images without touching the running Compose stack:
+
+```bash
+npm run test:docker-images
+```
+
+These checks also run in CI. They compare installed package versions with the
+lockfile, reject development dependencies, launch Chromium as the scraper user on
+a read-only filesystem, and check RSS generation and the feed health endpoint.
+Test containers have no network access to other services and are removed afterward.
+
 To apply code or dependency changes to your Docker container:
 
 1. Rebuild the Docker image:

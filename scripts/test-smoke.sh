@@ -60,6 +60,9 @@ SQL
 echo "[test-smoke] Checking database readiness, discovery and rendered RSS..."
 "${compose[@]}" exec -T feed-generator node /smoke/assert-feed.mjs
 
+echo "[test-smoke] Checking eligible feed-window pagination with separate test-only rows..."
+"${compose[@]}" exec -T feed-generator node /smoke/assert-feed-window.mjs
+
 echo "[test-smoke] Checking broken scraper health and success-check rejection..."
 "${compose[@]}" exec -T scraper-broken node /smoke/assert-scraper.mjs failure
 if "${compose[@]}" exec -T scraper-broken node /smoke/assert-scraper.mjs success broken-test-group; then

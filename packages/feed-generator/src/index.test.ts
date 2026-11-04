@@ -13,8 +13,6 @@ const {
   checkDatabaseMock,
   getDatabaseHealthMock,
   buildFeedUrlMock,
-  isLandingOrGroupUrlMock,
-  isUnreliableFacebookPhotoLinkMock,
 } = vi.hoisted(() => {
   const routeTable: Record<string, (req: any, res: any) => Promise<void> | void> = {};
 
@@ -46,8 +44,6 @@ const {
     checkDatabaseMock: vi.fn(),
     getDatabaseHealthMock: vi.fn(),
     buildFeedUrlMock: vi.fn(),
-    isLandingOrGroupUrlMock: vi.fn(),
-    isUnreliableFacebookPhotoLinkMock: vi.fn(),
   };
 });
 
@@ -84,8 +80,6 @@ vi.mock("./database.js", () => ({
 
 vi.mock("./utils.js", () => ({
   buildFeedUrl: buildFeedUrlMock,
-  isLandingOrGroupUrl: isLandingOrGroupUrlMock,
-  isUnreliableFacebookPhotoLink: isUnreliableFacebookPhotoLinkMock,
 }));
 
 import "./index.js";
@@ -231,7 +225,7 @@ describe("feed-generator routes", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "Group not found" });
   });
 
-  it("GET /feed/:groupId generates RSS and filters landing/group links", async () => {
+  it("GET /feed/:groupId renders the eligible post window", async () => {
     await bootstrap();
 
     getGroupBySourceIdMock.mockResolvedValue({
@@ -250,27 +244,9 @@ describe("feed-generator routes", () => {
         link: "https://www.facebook.com/groups/12345/posts/1",
         posted_at: new Date("2026-01-01T00:00:00.000Z"),
       },
-      {
-        source_post_id: "p-2",
-        author_name: "Bob",
-        content_text: "Skip me",
-        content_html: "<p>Skip me</p>",
-        link: "https://www.facebook.com/",
-        posted_at: new Date("2026-01-02T00:00:00.000Z"),
-      },
-      {
-        source_post_id: "p-3",
-        author_name: null,
-        content_text: "No link",
-        content_html: "<p>No link</p>",
-        link: null,
-        posted_at: new Date("2026-01-03T00:00:00.000Z"),
-      },
     ]);
 
     buildFeedUrlMock.mockReturnValue("https://host/feed/group-1");
-    isLandingOrGroupUrlMock.mockImplementation((link: string) => link === "https://www.facebook.com/");
-    isUnreliableFacebookPhotoLinkMock.mockReturnValue(false);
 
     const req = {
       params: { groupId: "group-1" },
@@ -282,7 +258,7 @@ describe("feed-generator routes", () => {
     await routes["/feed/:groupId"](req, res);
 
     expect(buildFeedUrlMock).toHaveBeenCalledWith("http://localhost:3100", "group-1");
-    expect(getPostsByGroupIdMock).toHaveBeenCalledWith(99);
+    expect(getPostsByGroupIdMock).toHaveBeenCalledWith(99, "https://www.facebook.com/groups/12345");
     expect(feedCtorMock).toHaveBeenCalledTimes(1);
     expect(addItemMock).toHaveBeenCalledTimes(1);
     expect(addItemMock).toHaveBeenCalledWith(

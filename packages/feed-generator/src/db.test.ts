@@ -13,7 +13,7 @@ import { getAllGroups, getGroupBySourceId, getPostsByGroupId } from "./db.js";
 
 describe("feed-generator db", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    queryMock.mockReset();
   });
 
   it("getAllGroups returns rows ordered by name", async () => {
@@ -56,12 +56,58 @@ describe("feed-generator db", () => {
     ];
 
     queryMock.mockResolvedValue({ rows });
-    await getPostsByGroupId(10);
-    expect(queryMock).toHaveBeenLastCalledWith(expect.stringContaining("FROM posts"), [10, 50]);
+    await getPostsByGroupId(10, "https://example.test/groups/10");
+    expect(queryMock).toHaveBeenLastCalledWith(expect.stringContaining("ORDER BY posted_at DESC, id DESC"), [10, 100]);
 
     queryMock.mockResolvedValue({ rows });
-    const result = await getPostsByGroupId(10, 5);
+    const result = await getPostsByGroupId(10, "https://example.test/groups/10", 5);
     expect(result).toEqual(rows);
-    expect(queryMock).toHaveBeenLastCalledWith(expect.stringContaining("FROM posts"), [10, 5]);
+    expect(queryMock).toHaveBeenLastCalledWith(expect.stringContaining("FROM posts"), [10, 100]);
+  });
+
+  it("scans past 100 ineligible posts using an exact timestamp and ID cursor", async () => {
+    const blocked = Array.from({ length: 100 }, (_, index) => ({
+      id: 200 - index, link: index % 2 ? null : "https://example.test/",
+      posted_at: new Date("2026-01-01T00:00:00Z"),
+      cursor_posted_at: "2026-01-01 00:00:00.000123+00",
+    }));
+    queryMock.mockResolvedValueOnce({ rows: blocked }).mockResolvedValueOnce({
+      rows: [{ id: 100, link: " https://other.test/post ", cursor_posted_at: "2026-01-01 00:00:00.000123+00" }],
+    });
+    const posts = await getPostsByGroupId(10, "https://example.test/groups/10");
+    expect(posts).toEqual([{ id: 100, link: "https://other.test/post" }]);
+    expect(queryMock).toHaveBeenLastCalledWith(
+      expect.stringContaining("(posted_at, id) < ($3::timestamptz, $4::integer)"),
+      [10, 100, "2026-01-01 00:00:00.000123+00", 101]
+    );
+  });
+
+  it("filters null, blank, home and group links before applying the output limit", async () => {
+    queryMock.mockResolvedValue({ rows: [
+      { link: null }, { link: " " }, { link: "https://example.test/" },
+      { link: "https://example.test/groups/10/" },
+      { link: " https://example.test/posts/1 " },
+      { link: "https://example.test/posts/2" },
+    ] });
+    expect(await getPostsByGroupId(10, "https://example.test/groups/10", 1))
+      .toEqual([{ link: "https://example.test/posts/1" }]);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an empty feed when no rows are eligible", async () => {
+    queryMock.mockResolvedValue({ rows: [{ link: null }] });
+    expect(await getPostsByGroupId(10, "https://example.test/groups/10")).toEqual([]);
+  });
+
+  it("surfaces errors from later batches instead of returning a partial feed", async () => {
+    queryMock.mockResolvedValueOnce({ rows: Array.from({ length: 100 }, (_, id) => ({
+      id, link: null, cursor_posted_at: "2026-01-01 00:00:00+00",
+    })) }).mockRejectedValueOnce(new Error("database unavailable"));
+    await expect(getPostsByGroupId(10, "https://example.test/groups/10")).rejects.toThrow("database unavailable");
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])("rejects invalid limits: %s", async (limit) => {
+    await expect(getPostsByGroupId(10, "https://example.test/groups/10", limit)).rejects.toThrow(RangeError);
+    expect(queryMock).not.toHaveBeenCalled();
   });
 });

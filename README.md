@@ -137,6 +137,10 @@ Notes:
 - Commit only redacted example files (for example, `*.example.json`).
 - If needed, override the cookie path via `SOURCE_COOKIE_FILE`.
 
+Competitions NZ destination-link lookups use a 10-second deadline per HTTP request
+and inherit the active scrape's cancellation signal. Failed lookups are logged with
+the competition ID and retain the original competitions.co.nz link.
+
 ## Feed Endpoints
 
 - `GET /health` -> service health payload.

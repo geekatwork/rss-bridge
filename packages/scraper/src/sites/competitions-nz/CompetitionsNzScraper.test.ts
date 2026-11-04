@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  CompetitionsNzScraper,
   canonicalizeCompetitionsNzUrl,
   isCompetitionsNzAuthenticated,
   normalizeCompetitionsNzCards,
@@ -8,6 +9,25 @@ import {
   toCompetitionsNzExitUrl,
   type CompetitionsNzRawCard,
 } from "./CompetitionsNzScraper.js";
+import type { NormalizedItem, ScraperContext, SiteConfig } from "../../core/types.js";
+
+function makeResponse(options: {
+  status: number;
+  ok: boolean;
+  url?: string;
+  location?: string;
+  cancelBody?: () => Promise<void>;
+}): Response {
+  return {
+    status: options.status,
+    ok: options.ok,
+    url: options.url ?? "",
+    headers: {
+      get: (name: string) => (name.toLowerCase() === "location" ? options.location ?? null : null),
+    },
+    body: options.cancelBody ? { cancel: options.cancelBody } : null,
+  } as unknown as Response;
+}
 
 describe("canonicalizeCompetitionsNzUrl", () => {
   it("keeps canonical competition detail URLs", () => {
@@ -29,12 +49,14 @@ describe("canonicalizeCompetitionsNzUrl", () => {
 
 describe("resolveCompetitionsNzDestinationUrl", () => {
   it("follows exit URLs and returns the final external destination", async () => {
+    const cancelBody = vi.fn().mockResolvedValue(undefined);
     const fetchMock = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce({
-        headers: {
-          get: (name: string) => (name.toLowerCase() === "location" ? "https://www.wagneraustralia.com.au/mothers-day-2026/#" : null),
-        },
-      } as unknown as Response);
+      .mockResolvedValueOnce(makeResponse({
+        status: 302,
+        ok: false,
+        location: "https://www.wagneraustralia.com.au/mothers-day-2026/#",
+        cancelBody,
+      }));
 
     await expect(
       resolveCompetitionsNzDestinationUrl(
@@ -45,22 +67,24 @@ describe("resolveCompetitionsNzDestinationUrl", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://www.competitions.co.nz/exit/win-wagner-dyi-bundle/38293/",
-      expect.objectContaining({ redirect: "manual" })
+      expect.objectContaining({ redirect: "manual", signal: expect.any(AbortSignal) })
     );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(cancelBody).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the competitions detail URL when resolution stays on competitions.co.nz", async () => {
     const fetchMock = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce({
-        headers: {
-          get: (name: string) => (name.toLowerCase() === "location"
-            ? "https://www.competitions.co.nz/register/?return=%2Fexit%2Fwin%2Dwagner%2Ddyi%2Dbundle%2F38293%2F"
-            : null),
-        },
-      } as unknown as Response)
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(makeResponse({
+        status: 302,
+        ok: false,
+        location: "https://www.competitions.co.nz/register/?return=%2Fexit%2Fwin%2Dwagner%2Ddyi%2Dbundle%2F38293%2F",
+      }))
+      .mockResolvedValueOnce(makeResponse({
+        status: 200,
+        ok: true,
         url: "https://www.competitions.co.nz/register/?return=%2Fexit%2Fwin%2Dwagner%2Ddyi%2Dbundle%2F38293%2F",
-      } as Response);
+      }));
 
     await expect(
       resolveCompetitionsNzDestinationUrl(
@@ -68,6 +92,122 @@ describe("resolveCompetitionsNzDestinationUrl", () => {
         fetchMock,
       )
     ).resolves.toBe("https://www.competitions.co.nz/win-wagner-dyi-bundle/38293");
+  });
+
+  it("uses the final URL from followed external redirects and releases both response bodies", async () => {
+    const cancelManual = vi.fn().mockResolvedValue(undefined);
+    const cancelFollowed = vi.fn().mockResolvedValue(undefined);
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(makeResponse({ status: 200, ok: true, cancelBody: cancelManual }))
+      .mockResolvedValueOnce(makeResponse({
+        status: 200,
+        ok: true,
+        url: "https://brand.example/entry",
+        cancelBody: cancelFollowed,
+      }));
+
+    await expect(resolveCompetitionsNzDestinationUrl(
+      "https://www.competitions.co.nz/win-wagner-dyi-bundle/38293/",
+      fetchMock,
+    )).resolves.toBe("https://brand.example/entry");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ redirect: "follow" }));
+    expect(cancelManual).toHaveBeenCalledTimes(1);
+    expect(cancelFollowed).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["manual", "followed"] as const)("rejects unsuccessful %s HTTP responses", async (responseType) => {
+    const cancelBody = vi.fn().mockResolvedValue(undefined);
+    const failedResponse = makeResponse({ status: 500, ok: false, cancelBody });
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(responseType === "manual"
+        ? failedResponse
+        : makeResponse({ status: 200, ok: true }))
+      .mockResolvedValueOnce(failedResponse);
+
+    await expect(resolveCompetitionsNzDestinationUrl(
+      "https://www.competitions.co.nz/win-wagner-dyi-bundle/38293/",
+      fetchMock,
+    )).rejects.toThrow("HTTP 500");
+    expect(cancelBody).toHaveBeenCalledTimes(1);
+  });
+
+  it("times out a destination request that never resolves", async () => {
+    const fetchMock = vi.fn<typeof fetch>((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    }));
+
+    await expect(resolveCompetitionsNzDestinationUrl(
+      "https://www.competitions.co.nz/win-wagner-dyi-bundle/38293/",
+      fetchMock,
+      undefined,
+      5,
+    )).rejects.toThrow("Destination request timed out after 5ms");
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it("propagates job cancellation to the active destination request", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<typeof fetch>((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    }));
+    const resolution = resolveCompetitionsNzDestinationUrl(
+      "https://www.competitions.co.nz/win-wagner-dyi-bundle/38293/",
+      fetchMock,
+      controller.signal,
+      1000,
+    );
+    const cancellation = new Error("job cancelled");
+    controller.abort(cancellation);
+
+    await expect(resolution).rejects.toThrow(cancellation);
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it("logs lookup failures and retains the source link", async () => {
+    const cancelBody = vi.fn().mockResolvedValue(undefined);
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(makeResponse({ status: 500, ok: false, cancelBody }));
+    const warn = vi.fn();
+    const context = {
+      jobId: "job-1",
+      signal: new AbortController().signal,
+      logger: { debug: vi.fn(), warn },
+    } as unknown as ScraperContext;
+    const config: SiteConfig = {
+      siteId: "competitions-nz",
+      name: "Competitions NZ",
+      enabled: true,
+      options: {},
+    };
+    const item: NormalizedItem = {
+      sourceId: "competition-38293",
+      sourceSite: "competitions-nz",
+      title: "Win a prize",
+      contentText: null,
+      contentHtml: null,
+      authorName: null,
+      link: "https://www.competitions.co.nz/win-wagner-dyi-bundle/38293",
+      mediaUrls: [],
+      publishedAt: new Date("2026-01-01T00:00:00.000Z"),
+    };
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await new CompetitionsNzScraper(config).resolveLinks(context, [item]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(item.link).toBe("https://www.competitions.co.nz/win-wagner-dyi-bundle/38293");
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        site: "competitions-nz",
+        jobId: "job-1",
+        sourceId: "competition-38293",
+        error: "Manual destination lookup returned HTTP 500",
+      }),
+      "Failed to resolve competition destination; keeping source link"
+    );
+    expect(cancelBody).toHaveBeenCalledTimes(1);
   });
 });
 

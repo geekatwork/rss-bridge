@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "fs";
+import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
 import type { ElementHandle, Page } from "puppeteer";
 import { canonicalizeUrl, SiteScraper, type NormalizedItem, type ScraperContext } from "../../core/index.js";
 import { textToParagraphHtml } from "../../core/utils.js";
@@ -7,6 +8,7 @@ const COMPETITIONS_NZ_BASE_URL = "https://www.competitions.co.nz";
 const COMPETITIONS_NZ_LOGIN_URL = `${COMPETITIONS_NZ_BASE_URL}/login/`;
 const COMPETITIONS_CARD_SELECTOR = "article.competition-card";
 const COMPETITIONS_NZ_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const DESTINATION_REQUEST_TIMEOUT_MS = 10_000;
 
 export interface CompetitionsNzRawCard {
   position: number;
@@ -146,6 +148,8 @@ export function selectCompetitionsNzNextPageUrl(
 export async function resolveCompetitionsNzDestinationUrl(
   rawUrl: string,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+  timeoutMs = DESTINATION_REQUEST_TIMEOUT_MS,
 ): Promise<string | null> {
   const canonical = canonicalizeCompetitionsNzUrl(rawUrl);
   if (!canonical) {
@@ -157,44 +161,103 @@ export async function resolveCompetitionsNzDestinationUrl(
     return canonical;
   }
 
-  try {
-    const redirectResponse = await fetchImpl(exitUrl, {
-      redirect: "manual",
-      headers: {
-        "user-agent": COMPETITIONS_NZ_USER_AGENT,
-      },
-    });
+  const redirectResponse = await fetchWithDeadline(fetchImpl, exitUrl, {
+    redirect: "manual",
+    headers: {
+      "user-agent": COMPETITIONS_NZ_USER_AGENT,
+    },
+  }, signal, timeoutMs);
 
-    const locationHeader = redirectResponse.headers.get("location");
-    if (locationHeader) {
+  const locationHeader = redirectResponse.headers.get("location");
+  let externalRedirectUrl: string | null = null;
+  if (redirectResponse.status >= 300 && redirectResponse.status < 400 && locationHeader) {
+    try {
       const redirectedUrl = canonicalizeUrl(new URL(locationHeader, exitUrl).toString(), { preserveHash: true });
       const redirectedHost = new URL(redirectedUrl).hostname;
       if (redirectedHost !== "www.competitions.co.nz" && redirectedHost !== "competitions.co.nz") {
-        return redirectedUrl;
+        externalRedirectUrl = redirectedUrl;
       }
+    } finally {
+      await cancelResponseBody(redirectResponse);
     }
+  } else {
+    await cancelResponseBody(redirectResponse);
+  }
+  if (externalRedirectUrl) return externalRedirectUrl;
+  if (!redirectResponse.ok && !(redirectResponse.status >= 300 && redirectResponse.status < 400 && locationHeader)) {
+    throw new Error(`Manual destination lookup returned HTTP ${redirectResponse.status}`);
+  }
 
-    const response = await fetchImpl(exitUrl, {
-      redirect: "follow",
-      headers: {
-        "user-agent": COMPETITIONS_NZ_USER_AGENT,
-      },
-    });
+  signal?.throwIfAborted();
+  const response = await fetchWithDeadline(fetchImpl, exitUrl, {
+    redirect: "follow",
+    headers: {
+      "user-agent": COMPETITIONS_NZ_USER_AGENT,
+    },
+  }, signal, timeoutMs);
 
-    const resolvedUrl = canonicalizeUrl(response.url || exitUrl, { preserveHash: true });
-    if (!resolvedUrl) {
-      return canonical;
-    }
+  if (!response.ok) {
+    await cancelResponseBody(response);
+    throw new Error(`Followed destination lookup returned HTTP ${response.status}`);
+  }
 
-    const resolvedHost = new URL(resolvedUrl).hostname;
-    if (resolvedHost === "www.competitions.co.nz" || resolvedHost === "competitions.co.nz") {
-      return canonical;
-    }
+  let resolvedUrl: string;
+  try {
+    resolvedUrl = canonicalizeUrl(response.url || exitUrl, { preserveHash: true });
+  } finally {
+    await cancelResponseBody(response);
+  }
+  if (!resolvedUrl) return canonical;
 
-    return resolvedUrl;
-  } catch {
+  const resolvedHost = new URL(resolvedUrl).hostname;
+  if (resolvedHost === "www.competitions.co.nz" || resolvedHost === "competitions.co.nz") {
     return canonical;
   }
+
+  return resolvedUrl;
+}
+
+async function fetchWithDeadline(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<Response> {
+  signal?.throwIfAborted();
+  const timeoutController = new AbortController();
+  const timeout = setNodeTimeout(() => timeoutController.abort(), timeoutMs);
+  const requestSignal = signal
+    ? AbortSignal.any([signal, timeoutController.signal])
+    : timeoutController.signal;
+  let response: Response;
+  try {
+    response = await fetchImpl(url, { ...init, signal: requestSignal });
+  } catch (error) {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error("Destination resolution cancelled");
+    }
+    if (timeoutController.signal.aborted) {
+      throw new Error(`Destination request timed out after ${timeoutMs}ms`, { cause: error });
+    }
+    throw error;
+  } finally {
+    clearNodeTimeout(timeout);
+  }
+
+  if (signal?.aborted) {
+    await cancelResponseBody(response);
+    throw signal.reason instanceof Error ? signal.reason : new Error("Destination resolution cancelled");
+  }
+  if (timeoutController.signal.aborted) {
+    await cancelResponseBody(response);
+    throw new Error(`Destination request timed out after ${timeoutMs}ms`);
+  }
+  return response;
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  if (response.body) await response.body.cancel();
 }
 
 function buildCompetitionSummary(card: CompetitionsNzRawCard): string | null {
@@ -667,7 +730,27 @@ export class CompetitionsNzScraper extends SiteScraper {
       }
 
       const originalLink = item.link;
-      const resolvedLink = await resolveCompetitionsNzDestinationUrl(originalLink);
+      let resolvedLink: string | null;
+      try {
+        resolvedLink = await resolveCompetitionsNzDestinationUrl(originalLink, fetch, context.signal);
+      } catch (error) {
+        context.signal?.throwIfAborted();
+        const message = error instanceof Error ? error.message : "";
+        const safeMessage = /^(Manual|Followed) destination lookup returned HTTP \d+$/.test(message)
+          || /^Destination request timed out after \d+ms$/.test(message)
+          ? message
+          : "Destination request failed";
+        context.logger.warn(
+          {
+            site: this.config.siteId,
+            jobId: context.jobId,
+            sourceId: item.sourceId,
+            error: safeMessage,
+          },
+          "Failed to resolve competition destination; keeping source link"
+        );
+        continue;
+      }
       if (resolvedLink && resolvedLink !== originalLink) {
         item.link = resolvedLink;
         item.rawPayload = {

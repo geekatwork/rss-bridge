@@ -308,12 +308,10 @@ Incremental boundary selection uses publication date descending, then row ID
 descending for ties, rather than the timestamp of the last processed insert.
 This avoids selecting the tail of a newest-to-oldest persistence batch.
 
-Before deploying this change to an existing database, back up the database and apply
-the additive, repeatable timestamp-provenance migration:
-
-```bash
-docker compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < db/03-post-timestamp-provenance.sql
-```
+Before deploying this change to an existing database, use the
+[existing-volume migration procedure](#existing-volume-database-migrations).
+It includes the additive timestamp-provenance migration; existing timestamps stay
+unchanged and existing rows default to unknown provenance.
 
 PostgreSQL entrypoint scripts run automatically only for new volumes. Existing
 volumes require the explicit command above; it does not delete or backfill dates.
@@ -381,6 +379,66 @@ After that, TT-RSS can use feed URLs like:
   - `packages/feed-generator/README.md`
 
 ## Redeploying to Docker
+
+### Existing-volume database migrations
+
+PostgreSQL runs `db/*.sql` automatically only on an empty data directory. An
+existing volume must be upgraded explicitly before deploying new application
+images. Never delete or recreate the volume to apply schema changes.
+
+On the Docker host, from the checked-out repository:
+
+1. Stop the scraper and feed generator to quiesce application writes. Keep the
+   database running; arrange a maintenance window and ensure no other writers run.
+2. Choose a new backup path outside the repository, on storage with enough free
+   space, and run:
+   ```bash
+   docker compose stop scraper feed-generator
+   npm run db:migrate -- --backup /safe/backups/rss-bridge-before-upgrade.dump
+   ```
+   The command uses the running Compose `db` service and its database credentials.
+   It does not start, recreate or restart containers. A custom-format `pg_dump`
+   must succeed and pass archive-list verification before changes begin. Backups
+   are private (mode 600), never overwritten, and retained on success or failure.
+   Archive-list verification is not a substitute for periodic restore testing.
+3. If exact non-null duplicate links exist, the default command refuses changes.
+   Inspect the backup and duplicate rows before deciding whether to rerun with a
+   **new backup filename** and `--deduplicate`. This explicitly permits deletion:
+   the lowest row ID wins for each exact non-null link, globally across groups;
+   all later rows for that link are deleted without merging content. Null links
+   remain independent. Historical URLs are not canonicalized by this migration.
+   This matches the existing link-index migration and #16's preserve-existing-row
+   policy; source-post IDs retain their separate global unique constraint.
+4. On success, build/deploy the intended service images and start only application
+   services (for example `docker compose up -d --no-deps scraper feed-generator`).
+   Verify health/RSS before ending maintenance. On failure, do not deploy newer
+   code; investigate the reported error. A failed dump may leave an unusable
+   partial backup: do not use it for recovery. Use a new path when retrying.
+
+The runner locks out concurrent migrations and post writes, applies migrations
+02 and 03 in one transaction, verifies the required unique partial index and
+provenance column, and records versions in `schema_migrations`. Reruns verify
+schema without repeating history entries or changing surviving post content.
+Lock waits are bounded to 10 seconds and each SQL statement to 60 seconds;
+timeouts/errors roll back schema changes, deletions and history together.
+It requires the base `groups`/`posts` schema and current `db` script mount.
+Fresh volumes already have the schema; running the command verifies and records it.
+Future schema scripts must also be wired into the runner's transaction,
+verification and version history; adding an init script alone does not upgrade
+existing volumes.
+
+To restore a backup, keep writers stopped and use `pg_restore --exit-on-error`
+into a **separate empty database** first; verify rows/schema before any deliberate
+cutover. Never restore blindly over a live database or delete the original volume.
+The isolated regression test exercises actual backup restoration as well as a
+populated legacy upgrade, duplicate refusal/opt-in, repeat execution and rollback:
+
+```bash
+npm run test:migrations
+```
+
+It uses a unique internal-only Compose project, tmpfs database and temporary
+backups; cleanup never targets production resources. CI runs this test too.
 
 ### Isolated end-to-end smoke tests
 

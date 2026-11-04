@@ -55,6 +55,9 @@ jobs:
       - name: Verify Docker production images
         run: npm run test:docker-images
 
+      - name: Existing-volume database migrations
+        run: npm run test:migrations
+
       - name: Smoke tests
         run: npm run test:smoke
 

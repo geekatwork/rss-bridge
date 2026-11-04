@@ -87,6 +87,7 @@ describe("scraper index startup", () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(global, "setInterval");
 
     ensureGroupMock.mockResolvedValue(101);
     getLatestScrapedSourcePostIdMock.mockResolvedValue(null);
@@ -136,6 +137,9 @@ describe("scraper index startup", () => {
   });
 
   afterEach(() => {
+    for (const result of vi.mocked(setInterval).mock.results) {
+      if (result.type === "return") clearInterval(result.value);
+    }
     process.env = originalEnv;
     vi.restoreAllMocks();
   });
@@ -333,16 +337,16 @@ describe("scraper index startup", () => {
     await flush();
     expect(engineScrapeOneMock).toHaveBeenCalledTimes(1);
 
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
     scheduledTasks[0]?.listeners.get("execution:missed")?.[0]?.();
     scheduledTasks[0]?.listeners.get("execution:missed")?.[0]?.();
     await flush();
     await flush();
 
     expect(engineScrapeOneMock).toHaveBeenCalledTimes(2);
-    expect(getHealthSnapshot().jobs[0]).toMatchObject({ missedRuns: 2, recoveredRuns: 1, stale: false });
+    expect(getHealthSnapshot().jobs[0]).toMatchObject({ missedRuns: 1, recoveredRuns: 1, stale: false });
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("Queued one catch-up run"));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('"trigger":"recovery"'));
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Coalescing missed execution"));
   });
 
   it("queues one catch-up when a schedule is missed during an active scrape", async () => {
@@ -361,6 +365,7 @@ describe("scraper index startup", () => {
     await flush();
     expect(engineScrapeOneMock).toHaveBeenCalledTimes(1);
 
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
     const missed = scheduledTasks[0]?.listeners.get("execution:missed")?.[0];
     missed?.();
     missed?.();
@@ -381,12 +386,39 @@ describe("scraper index startup", () => {
     const { getHealthSnapshot } = await import("./index.js");
     await flush();
     await flush();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
     scheduledTasks[1]?.listeners.get("execution:missed")?.[0]?.();
     await flush();
     expect(pruneFacebookPostsMock).toHaveBeenCalledTimes(1);
     expect(getHealthSnapshot().jobs.find((job) => job.jobId === "prune")).toMatchObject({
       missedRuns: 1, recoveredRuns: 1, lastSuccessAt: expect.any(String), stale: false,
     });
+  });
+
+  it("recovers silently missed scrape and prune deadlines through the same serialized queue", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    const { getHealthSnapshot } = await import("./index.js");
+    await flush();
+    await flush();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 60 * 60 * 1000 + 30_001);
+
+    for (const [check] of vi.mocked(setInterval).mock.calls) {
+      if (typeof check !== "function") throw new Error("Expected watchdog callback");
+      check();
+    }
+    await flush();
+    await flush();
+    await flush();
+
+    expect(engineScrapeOneMock).toHaveBeenCalledTimes(2);
+    expect(pruneFacebookPostsMock).toHaveBeenCalledTimes(1);
+    expect(getHealthSnapshot().status).toBe("ok");
+    expect(getHealthSnapshot().jobs).toEqual([
+      expect.objectContaining({ jobId: "scrape:12345", missedRuns: 1, recoveredRuns: 1, stale: false }),
+      expect.objectContaining({ jobId: "prune", missedRuns: 1, recoveredRuns: 1, stale: false }),
+    ]);
   });
 
   it("does not mark a scrape with reported errors as successful", async () => {

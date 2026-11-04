@@ -1,4 +1,5 @@
 import { query } from "./database.js";
+import { isLandingOrGroupUrl } from "./utils.js";
 
 export interface GroupRow {
   id: number;
@@ -37,16 +38,38 @@ export async function getGroupBySourceId(
 
 export async function getPostsByGroupId(
   groupId: number,
+  groupUrl: string,
   limit = 50
-): Promise<PostRow[]> {
-  const result = await query<PostRow>(
-    `SELECT id, source_post_id, author_name, content_text, content_html,
-            link, image_urls, posted_at
-     FROM posts
-     WHERE group_id = $1
-     ORDER BY posted_at DESC
-     LIMIT $2`,
-    [groupId, limit]
-  );
-  return result.rows;
+): Promise<Array<PostRow & { link: string }>> {
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new RangeError("Feed limit must be a positive safe integer");
+  }
+  const posts: Array<PostRow & { link: string }> = [];
+  let cursor: { postedAt: string; id: number } | undefined;
+  const batchSize = 100;
+  while (posts.length < limit) {
+    const result = await query<PostRow & { cursor_posted_at: string }>(
+      `SELECT id, source_post_id, author_name, content_text, content_html,
+              link, image_urls, posted_at, posted_at::text AS cursor_posted_at
+       FROM posts
+       WHERE group_id = $1
+         ${cursor ? "AND (posted_at, id) < ($3::timestamptz, $4::integer)" : ""}
+       ORDER BY posted_at DESC, id DESC
+       LIMIT $2`,
+      cursor ? [groupId, batchSize, cursor.postedAt, cursor.id] : [groupId, batchSize]
+    );
+    for (const row of result.rows) {
+      const link = row.link?.trim();
+      if (link && !isLandingOrGroupUrl(link, groupUrl)) {
+        const { cursor_posted_at, ...post } = row;
+        posts.push({ ...post, link });
+        if (posts.length === limit) return posts;
+      }
+    }
+    if (result.rows.length < batchSize) break;
+    const last = result.rows[result.rows.length - 1];
+    // Keep PostgreSQL's full timestamp precision across keyset pages.
+    cursor = { postedAt: last.cursor_posted_at, id: last.id };
+  }
+  return posts;
 }

@@ -209,6 +209,9 @@ Notes:
 
 - Feed channel `link`/`id` intentionally points to the feed URL itself.
 - Items with landing/root-like links are filtered out.
+- The feed contains up to 50 eligible items, scanning past newer null/blank or
+  landing/group links in bounded 100-row keyset batches. Publication-date ties
+  use descending row IDs, so the selected window is deterministic.
 
 ## Scraper Scheduler Diagnostics
 

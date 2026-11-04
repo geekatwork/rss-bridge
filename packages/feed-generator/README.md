@@ -34,10 +34,11 @@ The service has two layers:
 1. HTTP layer (src/index.ts)
 - Handles Express routes.
 - Builds RSS output with the feed package.
-- Applies link safety filtering before adding items.
+- Renders the eligible post window returned by data access.
 
 2. Data access layer (src/db.ts)
 - Queries groups and posts from Postgres.
+- Applies existing link eligibility checks during bounded post pagination.
 - Uses source-generic schema fields:
   - groups.source_id
   - posts.source_post_id
@@ -47,8 +48,19 @@ Request flow:
 1. Client requests /feed/:groupId.
 2. Service loads group by source_id.
 3. Service fetches latest posts for the group's internal id.
-4. Service filters invalid/landing links.
+4. Service scans posts in batches of at most 100, ordered by publication date and
+   row ID descending, excluding null/blank and landing/group links before counting
+   toward the 50-item output limit.
 5. Service emits RSS XML.
+
+Keyset pagination retains PostgreSQL's full timestamp precision to avoid skipping
+rows tied within a millisecond. Scanning stops at 50 eligible items or exhaustion,
+not an arbitrary raw-row cap, so newer ineligible rows cannot hide older valid
+items. Memory and each query result are bounded; total work depends on the number
+of ineligible rows scanned, and existing database timeouts still apply per query.
+Posts arriving ahead of the cursor during a request are picked up on the next
+request. Link eligibility rules are unchanged; unresolved-link quality is tracked
+separately in #23.
 
 ## Environment variables
 

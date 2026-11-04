@@ -1,7 +1,7 @@
 import express from "express";
 import { Feed } from "feed";
 import { getAllGroups, getGroupBySourceId, getPostsByGroupId } from "./db.js";
-import { buildFeedUrl, isLandingOrGroupUrl } from "./utils.js";
+import { buildFeedUrl } from "./utils.js";
 import { checkDatabase, getDatabaseHealth } from "./database.js";
 
 const app = express();
@@ -58,7 +58,7 @@ app.get("/feed/:groupId", async (req, res) => {
       return;
     }
 
-    const posts = await getPostsByGroupId(group.id);
+    const posts = await getPostsByGroupId(group.id, group.url);
     const feedUrl = buildFeedUrl(FEED_BASE_URL, group.source_id);
 
     const feed = new Feed({
@@ -73,22 +73,12 @@ app.get("/feed/:groupId", async (req, res) => {
     });
 
     for (const post of posts) {
-      const postLink = post.link?.trim() || null;
-      // Skip posts whose link is explicitly a landing/group page (bad link)
-      // but include posts with no link at all (null) — they still have content
-      if (postLink && isLandingOrGroupUrl(postLink, group.url)) {
-        continue;
-      }
-      if (!postLink) {
-        continue;
-      }
-
       feed.addItem({
         title: post.author_name
           ? `${post.author_name}: ${(post.content_text || "").slice(0, 80)}`
           : (post.content_text || "").slice(0, 80),
         id: post.source_post_id,
-        link: postLink,
+        link: post.link,
         description: post.content_html || post.content_text || "",
         date: post.posted_at,
         author: post.author_name

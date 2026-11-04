@@ -382,6 +382,30 @@ After that, TT-RSS can use feed URLs like:
 
 ## Redeploying to Docker
 
+### Isolated end-to-end smoke tests
+
+Run `npm run test:smoke` with Docker/Compose available. The script builds the
+service images and starts a uniquely named test project using
+`tests/smoke/docker-compose.yml`, not the production Compose file or `.env`.
+It publishes no ports, attaches no external networks/volumes, and stores Postgres
+data in an ephemeral tmpfs. The internal-only network contains a local HTML
+fixture; scraping requires no live websites, cookies, or credentials.
+
+The test waits for a real scheduled-orchestrator startup scrape to complete,
+checks scraper/database health and exact persisted fixture fields, then checks
+feed discovery and rendered RSS. It never manually seeds posts. The example
+plugin receives its listing `sourceUrl` from the group's `url`; other plugins'
+source-specific configuration is unchanged.
+
+A separate deliberately broken scraper must report degraded health and must be
+rejected by the same success check. To verify the entire command exits nonzero
+on broken configuration, run `npm run test:smoke -- --broken-config` (failure is
+expected). Success, failure and interruption clean up only that run's containers,
+test images and network; failure output includes bounded container logs.
+CI uses this same isolated test command.
+
+### Building and deploying images
+
 Both service images install dependencies with `npm ci` from the root workspace
 lockfile, scoped to the service being built. Build stages include development
 tools; final images omit development and optional dependencies (including the

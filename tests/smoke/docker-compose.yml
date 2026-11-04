@@ -1,0 +1,89 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: smoke
+      POSTGRES_USER: smoke
+      POSTGRES_PASSWORD: smoke-test-only
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ../../db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "smoke", "-d", "smoke"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  fixture:
+    image: node:26-alpine
+    command: ["node", "/smoke/fixture.mjs"]
+    volumes:
+      - .:/smoke:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  feed-generator:
+    build:
+      context: ../..
+      dockerfile: packages/feed-generator/Dockerfile
+    environment:
+      DATABASE_URL: postgres://smoke:smoke-test-only@db:5432/smoke
+      PORT: 3100
+      DB_CONNECT_TIMEOUT_MS: 1000
+      DB_QUERY_TIMEOUT_MS: 3000
+    volumes:
+      - .:/smoke:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  scraper: &scraper
+    build:
+      context: ../..
+      dockerfile: packages/scraper/Dockerfile
+    user: "10001:10001"
+    environment: &scraper-environment
+      DATABASE_URL: postgres://smoke:smoke-test-only@db:5432/smoke
+      SCRAPE_GROUPS: '[{"groupId":"smoke-test-group","siteId":"example-site","name":"Smoke Test Group","url":"http://fixture:8080/"}]'
+      SCRAPE_SCHEDULE: "0 0 1 1 *"
+      PRUNE_SCHEDULE: "0 0 1 1 *"
+      SCRAPE_GROUP_TIMEOUT_MS: 30000
+      SCRAPER_RUNTIME_DIAGNOSTICS: "false"
+      DB_CONNECT_TIMEOUT_MS: 1000
+      DB_QUERY_TIMEOUT_MS: 3000
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      XDG_CONFIG_HOME: /tmp/.config
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - .:/smoke:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      fixture:
+        condition: service_healthy
+
+  scraper-broken:
+    <<: *scraper
+    environment:
+      <<: *scraper-environment
+      SCRAPE_GROUPS: '[{"groupId":"broken-test-group","siteId":"unknown-smoke-plugin","name":"Broken Test Group","url":"http://fixture:8080/"}]'
+
+networks:
+  default:
+    internal: true

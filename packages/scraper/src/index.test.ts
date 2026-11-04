@@ -252,6 +252,19 @@ describe("scraper index startup", () => {
     expect(upsertItemsMock).not.toHaveBeenCalled();
   });
 
+  it("passes the configured local source URL to the example plugin", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "smoke-test-group", siteId: "example-site", name: "Smoke Test Group", url: "http://fixture:8080/" },
+    ]);
+    await import("./index.js");
+    await flush();
+    await flush();
+    expect(engineRegisterSiteMock).toHaveBeenCalledWith(expect.objectContaining({
+      siteId: "example-site",
+      options: expect.objectContaining({ sourceUrl: "http://fixture:8080/" }),
+    }));
+  });
+
   it("reports per-job success and stale freshness in health", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },

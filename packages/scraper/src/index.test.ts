@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setTimeout as setNodeTimeout } from "node:timers";
 import type { TaskContext } from "node-cron";
 import { checkDatabase, getDatabaseHealth } from "./database.js";
+import type { ScrapeResult } from "./core/types.js";
 
 const {
   scheduleMock,
@@ -68,6 +69,22 @@ function flush(): Promise<void> {
 function cronContext(): TaskContext {
   const date = new Date();
   return { date, dateLocalIso: date.toISOString(), triggeredAt: date };
+}
+
+function emptyResult(errors: string[] = []): ScrapeResult {
+  return {
+    site: "facebook", jobId: "empty", items: [], errors,
+    startedAt: new Date(), completedAt: new Date(), durationMs: 1,
+    itemsExtracted: 0, linksResolved: 0, linksResolveFailed: 0,
+  };
+}
+
+async function runScheduledScrape(): Promise<void> {
+  const callback = scheduleMock.mock.calls[0]?.[1];
+  if (typeof callback !== "function") throw new Error("Missing scheduled scrape callback");
+  callback(cronContext());
+  await flush();
+  await flush();
 }
 
 describe("scraper index startup", () => {
@@ -694,7 +711,7 @@ describe("scraper index startup", () => {
     );
   });
 
-  it("logs [ALERT] after two consecutive empty scrape runs", async () => {
+  it("does not alert for consecutive successful incremental runs with no new items", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       {
         groupId: "12345",
@@ -703,36 +720,186 @@ describe("scraper index startup", () => {
       },
     ]);
 
-    engineScrapeOneMock.mockResolvedValue({
-      site: "facebook",
-      jobId: "job-empty",
-      items: [],
-      errors: [],
-      startedAt: new Date("2026-01-01T00:00:00.000Z"),
-      completedAt: new Date("2026-01-01T00:00:01.000Z"),
-      durationMs: 1000,
-      itemsExtracted: 0,
-      linksResolved: 0,
-      linksResolveFailed: 0,
+    getLatestScrapedSourcePostIdMock.mockResolvedValue("boundary-post");
+    engineScrapeOneMock.mockResolvedValue(emptyResult());
+
+    const { getHealthSnapshot } = await import("./index.js");
+    await flush();
+    await flush();
+    await runScheduledScrape();
+    await runScheduledScrape();
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("[ALERT]"));
+    expect(upsertItemsMock).not.toHaveBeenCalled();
+    expect(getHealthSnapshot()).toMatchObject({
+      status: "ok", groupsWithAlerts: 0,
+      groups: [{ activeReasons: [], consecutiveEmptyRuns: 0 }],
+    });
+    expect(getHealthSnapshot().jobs[0]).toMatchObject({
+      lastSuccessAt: expect.any(String), lastError: null,
+    });
+  });
+
+  describe("group failure alert recovery", () => {
+    beforeEach(() => {
+      process.env.SCRAPE_GROUPS = JSON.stringify([
+        { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+      ]);
     });
 
-    await import("./index.js");
-    await flush();
-    await flush();
+    it("keeps authentication and scraper errors visible even when partial items persist", async () => {
+      const partial: ScrapeResult = await engineScrapeOneMock();
+      engineScrapeOneMock.mockResolvedValue({
+        ...partial, errors: ["authentication failed: expired cookies", "page failed"],
+      });
+      const { getHealthSnapshot, getReadinessSnapshot } = await import("./index.js");
+      await flush();
+      await flush();
+      expect(upsertItemsMock).toHaveBeenCalledWith(101, partial.items);
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual(["auth_failure", "scrape_failure"]);
+      expect((await getReadinessSnapshot()).status).toBe("degraded");
+      expect(getHealthSnapshot().jobs[0]).toMatchObject({ lastSuccessAt: null, stale: false });
+    });
 
-    // After initial run: consecutiveEmptyRuns=1, no alert yet
-    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("[ALERT]"));
+    it("keeps earlier reasons until a complete successful run, including an empty one", async () => {
+      engineScrapeOneMock.mockResolvedValueOnce(emptyResult(["authentication failed"]));
+      const { getHealthSnapshot } = await import("./index.js");
+      await flush();
+      await flush();
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual(["auth_failure"]);
 
-    // Trigger second run via cron callback
-    const scheduleCb = scheduleMock.mock.calls[0]?.[1] as ((context: TaskContext) => void) | undefined;
-    scheduleCb?.(cronContext());
+      engineScrapeOneMock.mockResolvedValueOnce(emptyResult(["source unavailable"]));
+      await runScheduledScrape();
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual([
+        "auth_failure", "scrape_failure", "repeated_empty",
+      ]);
+      expect(getHealthSnapshot().groups[0].consecutiveEmptyRuns).toBe(2);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("2 consecutive runs"));
 
-    // cron callback is sync; flush lets the async triggerRun settle
-    await flush();
-    await flush();
+      engineScrapeOneMock.mockResolvedValueOnce(emptyResult());
+      await runScheduledScrape();
+      expect(getHealthSnapshot()).toMatchObject({
+        status: "ok", groupsWithAlerts: 0,
+        groups: [{ activeReasons: [], consecutiveEmptyRuns: 0 }],
+      });
+      expect(getHealthSnapshot().groups[0].lastAlertAt).toBeUndefined();
+      expect(getHealthSnapshot().groups[0].lastAlertMessage).toBeUndefined();
+    });
 
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("[ALERT]"));
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("2 consecutive run"));
+    it("preserves authentication failures while persistence is pending, then fails independently", async () => {
+      engineScrapeOneMock.mockResolvedValueOnce(emptyResult(["authentication failed"]));
+      const { getHealthSnapshot } = await import("./index.js");
+      await flush();
+      await flush();
+
+      let rejectPersistence: ((error: Error) => void) | undefined;
+      upsertItemsMock.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+        rejectPersistence = reject;
+      }));
+      await runScheduledScrape();
+      expect(getHealthSnapshot().runInProgress).toBe(true);
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual(["auth_failure"]);
+      rejectPersistence?.(new Error("write rejected"));
+      await flush();
+      await flush();
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual(["auth_failure", "database_failure"]);
+      expect(getHealthSnapshot().status).toBe("degraded");
+      expect(getHealthSnapshot().jobs[0].lastSuccessAt).toBeNull();
+
+      await runScheduledScrape();
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual([]);
+      expect(getHealthSnapshot().status).toBe("ok");
+    });
+
+    it("does not clear alerts until persistence and browser shutdown have both completed", async () => {
+      engineScrapeOneMock.mockResolvedValueOnce(emptyResult(["authentication failed"]));
+      const { getHealthSnapshot } = await import("./index.js");
+      await flush();
+      await flush();
+      let persist: ((count: number) => void) | undefined;
+      let shutdown: (() => void) | undefined;
+      upsertItemsMock.mockImplementationOnce(() => new Promise((resolve) => { persist = resolve; }));
+      engineShutdownMock.mockImplementationOnce(() => new Promise<void>((resolve) => { shutdown = resolve; }));
+
+      await runScheduledScrape();
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual(["auth_failure"]);
+      persist?.(0);
+      await flush();
+      expect(getHealthSnapshot().runInProgress).toBe(true);
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual(["auth_failure"]);
+      shutdown?.();
+      await flush();
+      await flush();
+      expect(getHealthSnapshot().status).toBe("ok");
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual([]);
+    });
+
+    it.each(["setup", "boundary", "persistence", "init", "scrape", "cleanup"] as const)(
+      "reports %s failures immediately, preserves previous freshness, and recovers on success",
+      async (stage) => {
+        const { getHealthSnapshot } = await import("./index.js");
+        await flush();
+        await flush();
+        const previousSuccess = getHealthSnapshot().jobs[0].lastSuccessAt;
+        const previousDeadline = getHealthSnapshot().jobs[0].expectedCompletionBy;
+        const mocks = {
+          setup: ensureGroupMock, boundary: getLatestScrapedSourcePostIdMock,
+          persistence: upsertItemsMock, init: engineInitMock,
+          scrape: engineScrapeOneMock, cleanup: engineShutdownMock,
+        };
+        mocks[stage].mockRejectedValueOnce(new Error(`${stage} failed`));
+        await runScheduledScrape();
+        expect(getHealthSnapshot().status).toBe("degraded");
+        const reason = ["setup", "boundary", "persistence"].includes(stage) ? "database_failure"
+          : stage === "cleanup" ? "cleanup_failure" : "scrape_failure";
+        expect(getHealthSnapshot().groups[0].activeReasons).toEqual([reason]);
+        expect(getHealthSnapshot().jobs[0]).toMatchObject({
+          lastSuccessAt: previousSuccess, expectedCompletionBy: previousDeadline, stale: false,
+        });
+        await runScheduledScrape();
+        expect(getHealthSnapshot().status).toBe("ok");
+        expect(getHealthSnapshot().jobs[0].lastError).toBeNull();
+        expect(getHealthSnapshot().groups[0].activeReasons).toEqual([]);
+      }
+    );
+
+    it("keeps a timeout alert through a later failed run and clears it only on success", async () => {
+      process.env.SCRAPE_GROUP_TIMEOUT_MS = "5";
+      engineScrapeOneMock.mockImplementationOnce((_site, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        })
+      );
+      const { getHealthSnapshot } = await import("./index.js");
+      await new Promise((resolve) => setNodeTimeout(resolve, 20));
+      await flush();
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual(["timeout"]);
+
+      engineScrapeOneMock.mockResolvedValueOnce(emptyResult(["page failed"]));
+      await runScheduledScrape();
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual(["timeout", "scrape_failure"]);
+
+      await runScheduledScrape();
+      expect(getHealthSnapshot().status).toBe("ok");
+      expect(getHealthSnapshot().groups[0].activeReasons).toEqual([]);
+    });
+
+    it("does not let a successful group clear another group's failure", async () => {
+      process.env.SCRAPE_GROUPS = JSON.stringify([
+        { groupId: "12345", name: "Failed group", url: "https://www.facebook.com/groups/12345" },
+        { groupId: "67890", name: "Healthy group", url: "https://www.facebook.com/groups/67890" },
+      ]);
+      engineScrapeOneMock.mockResolvedValueOnce(emptyResult(["authentication failed"]));
+      const { getHealthSnapshot } = await import("./index.js");
+      await flush();
+      await flush();
+      expect(getHealthSnapshot()).toMatchObject({
+        status: "degraded", groupsWithAlerts: 1,
+        groups: [
+          { groupId: "12345", activeReasons: ["auth_failure"] },
+          { groupId: "67890", activeReasons: [] },
+        ],
+      });
+    });
   });
 
   it("logs pruned count when prune job succeeds", async () => {

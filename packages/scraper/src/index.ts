@@ -31,7 +31,7 @@ class TimeoutError extends Error {
   }
 }
 
-type AlertReason = "auth_failure" | "timeout" | "repeated_empty";
+type AlertReason = "auth_failure" | "timeout" | "repeated_empty" | "scrape_failure" | "database_failure" | "cleanup_failure";
 
 interface GroupAlertState {
   groupName: string;
@@ -138,12 +138,6 @@ function setGroupAlert(groupId: string, groupName: string, reason: AlertReason, 
   state.lastAlertMessage = message;
 }
 
-function clearGroupAlertReason(groupId: string, reason: AlertReason): void {
-  const state = groupAlertStateByGroupId.get(groupId);
-  if (!state) return;
-  state.activeReasons.delete(reason);
-}
-
 function clearAllGroupAlerts(groupId: string): void {
   const state = groupAlertStateByGroupId.get(groupId);
   if (!state) return;
@@ -221,6 +215,13 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
   const alertState = getGroupAlertState(config.groupId, config.name);
   const controller = new AbortController();
   const engine = new ScrapeEngine();
+  const failure: { reason: AlertReason } = { reason: "database_failure" };
+  const alert = (reason: AlertReason, detail: string) => {
+    const message = `[ALERT] ${config.name} (${config.groupId}) ${detail}`;
+    setGroupAlert(config.groupId, config.name, reason, message);
+    console.error(message);
+  };
+  const isAuthFailure = (message: string) => /authentication failed|cookies are required/i.test(message);
   console.log(`[${new Date().toISOString()}] Scraping group: ${config.name} (${config.groupId}) via ${siteId}`);
 
   const run = async (): Promise<boolean> => {
@@ -230,6 +231,7 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
     controller.signal.throwIfAborted();
     const facebookBoundaryFallbackLimit = parsePositiveInteger(process.env.FACEBOOK_BOUNDARY_FALLBACK_LIMIT, 50);
 
+    failure.reason = "scrape_failure";
     await engine.init(controller.signal);
     controller.signal.throwIfAborted();
     engine.registerSite({
@@ -256,33 +258,27 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
     if (result.errors.length > 0) {
       console.warn(`  Scraper errors:`, result.errors);
 
-      const hasAuthFailure = result.errors.some((error) => /authentication failed|cookies are required/i.test(error));
+      const hasAuthFailure = result.errors.some(isAuthFailure);
       if (hasAuthFailure) {
-        const alertMessage = `[ALERT] ${config.name} (${config.groupId}) failed authentication. Refresh cookie files in /app/cookies and verify mount visibility.`;
-        setGroupAlert(config.groupId, config.name, "auth_failure", alertMessage);
-        console.error(alertMessage);
-      } else {
-        clearGroupAlertReason(config.groupId, "auth_failure");
+        alert("auth_failure", "failed authentication. Refresh cookie files in /app/cookies and verify mount visibility.");
       }
-    } else {
-      clearGroupAlertReason(config.groupId, "auth_failure");
+      if (result.errors.some((error) => !isAuthFailure(error))) {
+        alert("scrape_failure", `reported scraper errors: ${result.errors.join("; ")}`);
+      }
     }
 
-    if (result.itemsExtracted === 0) {
+    if (result.errors.length > 0 && result.items.length === 0) {
       const current = alertState.consecutiveEmptyRuns + 1;
       alertState.consecutiveEmptyRuns = current;
       if (current >= 2) {
-        const alertMessage = `[ALERT] ${config.name} (${config.groupId}) returned 0 items for ${current} consecutive runs. Check cookies, source availability, and scraper logs.`;
-        setGroupAlert(config.groupId, config.name, "repeated_empty", alertMessage);
-        console.error(alertMessage);
+        alert("repeated_empty", `returned 0 items with scraper errors for ${current} consecutive runs. Check cookies, source availability, and scraper logs.`);
       }
-    } else {
+    } else if (result.items.length > 0) {
       alertState.consecutiveEmptyRuns = 0;
-      clearGroupAlertReason(config.groupId, "repeated_empty");
-      clearAllGroupAlerts(config.groupId);
     }
 
     if (result.items.length > 0) {
+      failure.reason = "database_failure";
       const upserted = await upsertItems(groupId, result.items);
       controller.signal.throwIfAborted();
       console.log(`  Upserted ${upserted} items into database`);
@@ -298,16 +294,16 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
       const error = new TimeoutError(`Timed out after ${groupTimeoutMs}ms: ${config.name} (${config.groupId})`);
       controller.abort(error);
       void engine.shutdown().catch((shutdownError: unknown) => {
-        console.error(`Browser shutdown failed for ${config.name} (${config.groupId}):`,
-          shutdownError instanceof Error ? shutdownError.message : shutdownError);
+        alert("cleanup_failure", `browser shutdown failed: ${shutdownError instanceof Error ? shutdownError.message : String(shutdownError)}`);
       });
       reject(error);
     }, groupTimeoutMs);
   });
   const runPromise = run();
 
+  let success = false;
   try {
-    return await Promise.race([runPromise, timedOut]);
+    success = await Promise.race([runPromise, timedOut]);
   } catch (err) {
     if (err instanceof TimeoutError) {
       const alertMessage = `[ALERT] ${config.name} (${config.groupId}) scrape exceeded timeout (${groupTimeoutMs}ms); waiting for active work to stop before starting another group.`;
@@ -320,13 +316,25 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
           settleError instanceof Error ? settleError.message : settleError);
       }
     } else {
-      console.error(`  Scraper failed:`, err instanceof Error ? err.message : err);
+      const message = err instanceof Error ? err.message : String(err);
+      alert(failure.reason === "scrape_failure" && isAuthFailure(message) ? "auth_failure" : failure.reason,
+        `failed during ${failure.reason === "database_failure" ? "database setup/persistence" : "scraping"}: ${message}`);
     }
     return false;
   } finally {
     if (timeout) clearNodeTimeout(timeout);
-    await engine.shutdown();
+    try {
+      await engine.shutdown();
+    } catch (error) {
+      alert("cleanup_failure", `browser shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
   }
+  if (success) {
+    alertState.consecutiveEmptyRuns = 0;
+    clearAllGroupAlerts(config.groupId);
+  }
+  return success;
 }
 
 type RunTrigger = "initial" | "scheduled" | "recovery";

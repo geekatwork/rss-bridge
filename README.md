@@ -195,6 +195,18 @@ connection errors as `database_query_error`. Failed calls still reject (no empty
 success fallback); subsequent successful queries can restore database health.
 Successful empty scrapes count as success; reported scraper errors do not.
 
+Group alerts remain active until an error-free run finishes persistence (when
+there are items) and browser cleanup. Partial results may still be saved, but
+cannot clear earlier alerts. Health tracks `auth_failure`, `timeout`,
+`scrape_failure`, `database_failure` (setup or persistence), and `cleanup_failure`
+independently; a healthy database probe alone does not clear a group's failed run.
+Successful runs with no new posts also clear group alerts: no write is needed.
+`consecutiveEmptyRuns` counts empty results with reported scraper errors, not
+legitimate error-free incremental runs. Two such failed empty runs add
+`repeated_empty`; any reported error already makes group health degraded immediately.
+These alerts supplement existing job freshness; failed runs never advance last
+success or its deadline.
+
 Database limits are configured per process:
 
 | Variable | Scraper default | Feed default |

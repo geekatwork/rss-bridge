@@ -11,6 +11,7 @@ import {
 } from "./db.js";
 import type { GroupConfig } from "./types.js";
 import { SchedulerDiagnostics, startRuntimeDiagnostics } from "./schedulerDiagnostics.js";
+import { scheduleWithRecovery } from "./recoverableSchedule.js";
 
 interface GroupConfigInput {
   groupId?: string;
@@ -477,7 +478,7 @@ console.log(
     .join("; ")}`
 );
 for (const [schedule, scheduledGroups] of groupsBySchedule.entries()) {
-  const task = cron.schedule(schedule, (context) => {
+  const task = scheduleWithRecovery(schedule, (context) => {
     // Add random jitter before starting (0-10 minutes)
     const jitterMs = Math.random() * 10 * 60 * 1000;
     for (const group of scheduledGroups) diagnostics.scheduled(`scrape:${group.groupId}`, context.date, jitterMs);
@@ -487,6 +488,9 @@ for (const [schedule, scheduledGroups] of groupsBySchedule.entries()) {
     setTimeout(() => {
       void triggerRun(scheduledGroups, "scheduled", context.date);
     }, jitterMs);
+  }, () => {
+    for (const group of scheduledGroups) diagnostics.missed(`scrape:${group.groupId}`);
+    queueRecovery(`scrape:${schedule}`, () => triggerRun(scheduledGroups, "recovery"));
   });
   const groupTimeoutMs = parsePositiveInteger(process.env.SCRAPE_GROUP_TIMEOUT_MS, 20 * 60 * 1000);
   // Include startup's full sequential cycle and scheduled jitter in the freshness budget.
@@ -499,25 +503,20 @@ for (const [schedule, scheduledGroups] of groupsBySchedule.entries()) {
       return next;
     }, allowanceMs, true);
   }
-  task.on("execution:missed", () => {
-    for (const group of scheduledGroups) diagnostics.missed(`scrape:${group.groupId}`);
-    queueRecovery(`scrape:${schedule}`, () => triggerRun(scheduledGroups, "recovery"));
-  });
 }
 
-const pruneTask = cron.schedule(pruneSchedule, (context) => {
+const pruneTask = scheduleWithRecovery(pruneSchedule, (context) => {
   diagnostics.scheduled("prune", context.date);
   void triggerPrune(pruneRetentionDays, context.date);
+}, () => {
+  diagnostics.missed("prune");
+  queueRecovery("prune", () => triggerPrune(pruneRetentionDays, new Date(), "recovery"));
 });
 diagnostics.register("prune", pruneSchedule, () => {
   const next = pruneTask.getNextRun();
   if (!next) throw new Error(`No next run for active schedule: ${pruneSchedule}`);
   return next;
 }, 5 * 60 * 1000);
-pruneTask.on("execution:missed", () => {
-  diagnostics.missed("prune");
-  queueRecovery("prune", () => triggerPrune(pruneRetentionDays, new Date(), "recovery"));
-});
 
 startHealthServer();
 if (process.env.NODE_ENV !== "test") startRuntimeDiagnostics(process.env.SCRAPER_RUNTIME_DIAGNOSTICS);

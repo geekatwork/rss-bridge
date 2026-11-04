@@ -164,6 +164,11 @@ The scraper logs JSON events alongside its existing scrape output:
   The scraper queues one immediate catch-up per missed scrape schedule (or prune job);
   repeated misses for that same schedule are coalesced, and catch-ups wait for any
   active scrape/prune cycle to finish.
+  An independent 30-second deadline check also detects schedules silently skipped
+  by node-cron (including a delayed first heartbeat). After a 30-second grace
+  period, it queues the same catch-up; late callbacks and missed events for that
+  occurrence are coalesced. `schedule_missed` records whether node-cron or the
+  watchdog detected the miss. This check stays active when runtime telemetry is off.
 - `scheduler_runtime`: when enabled with `SCRAPER_RUNTIME_DIAGNOSTICS=true`, samples
   event-loop maximum/p99 delay, timer delay, and wall-clock drift every 30 seconds.
   Delays/drift above 2 seconds produce warnings. These distinguish symptoms, not

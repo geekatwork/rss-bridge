@@ -58,6 +58,9 @@ jobs:
       - name: Existing-volume database migrations
         run: npm run test:migrations
 
+      - name: Facebook retention policy
+        run: npm run test:retention
+
       - name: Smoke tests
         run: npm run test:smoke
 

@@ -64,6 +64,18 @@ Schema uses source-generic identifiers:
    - `PRUNE_RETENTION_DAYS=7` (optional; Facebook groups only)
    - `PRUNE_SCHEDULE=0 3 * * *` (optional; daily prune cron)
 
+   Facebook retention and automatic Facebook group classification share an
+   explicit URL policy: HTTP/HTTPS group URLs on `facebook.com`,
+   `www.facebook.com`, `m.facebook.com` and `mbasic.facebook.com`, case-insensitively,
+   with a nonempty `/groups/<id-or-slug>` path. Other hosts, Facebook non-group
+   paths and lookalike domains are not eligible for Facebook retention.
+   Automatic inference now also recognizes mbasic group URLs and does not infer
+   Facebook for bare/www/mobile lookalike domains or non-group URLs.
+   Explicit `siteId` still overrides inference, but does not expand retention.
+   Only posts strictly older than the retention cutoff are deleted; posts at
+   the cutoff remain. Validate real SQL deletion in isolated PostgreSQL with
+   `npm run test:retention` (also run in CI).
+
 2. Provision the external Docker resources **before the first startup**:
 
    ```bash

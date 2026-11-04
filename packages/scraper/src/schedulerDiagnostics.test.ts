@@ -1,14 +1,21 @@
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SchedulerDiagnostics, startRuntimeDiagnostics } from "./schedulerDiagnostics.js";
+import {
+  parseRuntimeDiagnosticsFlag,
+  SchedulerDiagnostics,
+  startRuntimeDiagnostics,
+} from "./schedulerDiagnostics.js";
 
 describe("scheduler diagnostics", () => {
   let diagnostics: SchedulerDiagnostics;
+  let originalRuntimeDiagnosticsFlag: string | undefined;
   const nextRun = () => new Date(Date.now() + 60_000);
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-11-02T06:00:00Z"));
+    originalRuntimeDiagnosticsFlag = process.env.SCRAPER_RUNTIME_DIAGNOSTICS;
+    delete process.env.SCRAPER_RUNTIME_DIAGNOSTICS;
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -16,6 +23,11 @@ describe("scheduler diagnostics", () => {
   });
 
   afterEach(() => {
+    if (originalRuntimeDiagnosticsFlag === undefined) {
+      delete process.env.SCRAPER_RUNTIME_DIAGNOSTICS;
+    } else {
+      process.env.SCRAPER_RUNTIME_DIAGNOSTICS = originalRuntimeDiagnosticsFlag;
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -88,9 +100,33 @@ describe("scheduler diagnostics", () => {
     expect(() => diagnostics.started("unknown")).toThrow("Unknown diagnostic job");
   });
 
-  it("logs clock drift and delayed timer samples, and stops cleanly", () => {
+  it("parses the runtime diagnostics flag with a disabled default", () => {
+    expect(parseRuntimeDiagnosticsFlag(undefined)).toBe(false);
+    expect(parseRuntimeDiagnosticsFlag(" false ")).toBe(false);
+    expect(parseRuntimeDiagnosticsFlag("TRUE")).toBe(true);
+    expect(parseRuntimeDiagnosticsFlag("true")).toBe(true);
+    expect(() => parseRuntimeDiagnosticsFlag("")).toThrow(
+      'Invalid SCRAPER_RUNTIME_DIAGNOSTICS value "". Expected "true" or "false".'
+    );
+    expect(() => parseRuntimeDiagnosticsFlag("yes")).toThrow(
+      'Invalid SCRAPER_RUNTIME_DIAGNOSTICS value "yes". Expected "true" or "false".'
+    );
+  });
+
+  it("does not start periodic runtime samples when disabled by default or explicitly", () => {
+    const stopDefault = startRuntimeDiagnostics();
+    const stopExplicit = startRuntimeDiagnostics("false");
+    vi.advanceTimersByTime(60_000);
+    expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('"event":"scheduler_runtime"'));
+    expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('"event":"scheduler_runtime"'));
+    stopDefault();
+    stopExplicit();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("logs clock drift and delayed timer samples when enabled, and stops cleanly", () => {
     const monotonic = vi.spyOn(performance, "now").mockReturnValue(0);
-    const stop = startRuntimeDiagnostics();
+    const stop = startRuntimeDiagnostics("true");
     monotonic.mockReturnValue(30_000);
     vi.advanceTimersByTime(30_000);
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('"clockDriftMs":0'));

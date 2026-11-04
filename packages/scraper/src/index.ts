@@ -520,7 +520,7 @@ pruneTask.on("execution:missed", () => {
 });
 
 startHealthServer();
-if (process.env.NODE_ENV !== "test") startRuntimeDiagnostics();
+if (process.env.NODE_ENV !== "test") startRuntimeDiagnostics(process.env.SCRAPER_RUNTIME_DIAGNOSTICS);
 
 // Run once immediately on startup; cron schedules are already active.
 triggerRun(groups, "initial").then(() => {

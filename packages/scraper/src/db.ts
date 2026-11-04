@@ -1,18 +1,12 @@
-import { Pool } from "pg";
+import { query } from "./database.js";
 import type { NormalizedPost, GroupConfig } from "./types.js";
 import type { NormalizedItem } from "./core/index.js";
 import { canonicalizeUrl } from "./core/utils.js";
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
-
-export async function closeDb(): Promise<void> {
-  await pool.end();
-}
+export { closeDb } from "./database.js";
 
 export async function ensureGroup(config: GroupConfig): Promise<number> {
-  const result = await pool.query(
+  const result = await query(
     `INSERT INTO groups (source_id, name, url)
      VALUES ($1, $2, $3)
      ON CONFLICT (source_id) DO UPDATE SET name = $2, url = $3
@@ -57,7 +51,7 @@ async function persistPost(groupId: number, post: PersistablePost): Promise<numb
   const normalizedLink = normalizeLink(post.link);
 
   if (normalizedLink) {
-    const existingByLink = await pool.query<ExistingPostRow>(
+    const existingByLink = await query<ExistingPostRow>(
       `SELECT source_post_id
        FROM posts
        WHERE link = $1
@@ -72,7 +66,7 @@ async function persistPost(groupId: number, post: PersistablePost): Promise<numb
   }
 
   try {
-    const result = await pool.query(
+    const result = await query(
       `INSERT INTO posts (group_id, source_post_id, author_name, content_text, content_html, link, image_urls, posted_at, posted_at_is_source, scraped_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
        ON CONFLICT (source_post_id) DO UPDATE SET
@@ -164,7 +158,7 @@ export async function pruneFacebookPosts(retentionDays = 7): Promise<number> {
   const safeRetentionDays = Number.isInteger(retentionDays) && retentionDays > 0 ? retentionDays : 7;
   const cutoffDate = new Date(Date.now() - safeRetentionDays * 24 * 60 * 60 * 1000);
 
-  const result = await pool.query(
+  const result = await query(
     `DELETE FROM posts AS p
      USING groups AS g
      WHERE p.group_id = g.id
@@ -192,7 +186,7 @@ export async function pruneFacebookPosts(retentionDays = 7): Promise<number> {
 export async function getLatestScrapedSourcePostId(
   groupId: number
 ): Promise<string | null> {
-  const result = await pool.query(
+  const result = await query(
     `SELECT source_post_id
      FROM posts
      WHERE group_id = $1

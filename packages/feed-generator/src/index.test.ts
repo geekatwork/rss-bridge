@@ -10,6 +10,8 @@ const {
   getAllGroupsMock,
   getGroupBySourceIdMock,
   getPostsByGroupIdMock,
+  checkDatabaseMock,
+  getDatabaseHealthMock,
   buildFeedUrlMock,
   isLandingOrGroupUrlMock,
   isUnreliableFacebookPhotoLinkMock,
@@ -41,6 +43,8 @@ const {
     getAllGroupsMock: vi.fn(),
     getGroupBySourceIdMock: vi.fn(),
     getPostsByGroupIdMock: vi.fn(),
+    checkDatabaseMock: vi.fn(),
+    getDatabaseHealthMock: vi.fn(),
     buildFeedUrlMock: vi.fn(),
     isLandingOrGroupUrlMock: vi.fn(),
     isUnreliableFacebookPhotoLinkMock: vi.fn(),
@@ -71,6 +75,11 @@ vi.mock("./db.js", () => ({
   getAllGroups: getAllGroupsMock,
   getGroupBySourceId: getGroupBySourceIdMock,
   getPostsByGroupId: getPostsByGroupIdMock,
+}));
+
+vi.mock("./database.js", () => ({
+  checkDatabase: checkDatabaseMock,
+  getDatabaseHealth: getDatabaseHealthMock,
 }));
 
 vi.mock("./utils.js", () => ({
@@ -113,6 +122,8 @@ describe("feed-generator routes", () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
     delete process.env.FEED_BASE_URL;
+    checkDatabaseMock.mockResolvedValue(true);
+    getDatabaseHealthMock.mockReturnValue({ status: "ok", lastError: null, lastSuccessAt: null });
 
     for (const key of Object.keys(routes)) {
       delete routes[key];
@@ -154,7 +165,25 @@ describe("feed-generator routes", () => {
     const res = makeRes();
     await routes["/health"]({}, res);
 
-    expect(res.json).toHaveBeenCalledWith({ status: "ok" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json).toHaveBeenCalledWith({
+      status: "ok", database: { status: "ok", lastError: null, lastSuccessAt: null },
+    });
+  });
+
+  it("GET /health reports database failure and subsequent recovery", async () => {
+    await bootstrap();
+    checkDatabaseMock.mockResolvedValueOnce(false);
+    getDatabaseHealthMock.mockReturnValueOnce({ status: "degraded", lastError: "Query read timeout", lastSuccessAt: null });
+    const failed = makeRes();
+    await routes["/health"]({}, failed);
+    expect(failed.statusCode).toBe(503);
+    expect(failed.body.database.lastError).toBe("Query read timeout");
+
+    const recovered = makeRes();
+    await routes["/health"]({}, recovered);
+    expect(recovered.statusCode).toBe(200);
+    expect(recovered.body.status).toBe("ok");
   });
 
   it("GET /feeds returns mapped feed metadata", async () => {

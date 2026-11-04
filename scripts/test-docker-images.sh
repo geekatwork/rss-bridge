@@ -96,7 +96,12 @@ async function main() {
     const feed = new (require("feed").Feed)({ title: "Test", id: "test", copyright: "" });
     assert.match(feed.rss2(), /<rss/);
     const server = spawn(process.execPath, ["dist/index.js"], {
-      env: { ...process.env, PORT: "3100" }, stdio: ["ignore", "inherit", "inherit"],
+      env: {
+        ...process.env, PORT: "3100",
+        DATABASE_URL: "postgres://test:test@127.0.0.1:1/test",
+        DB_CONNECT_TIMEOUT_MS: "100", DB_QUERY_TIMEOUT_MS: "100",
+      },
+      stdio: ["ignore", "inherit", "inherit"],
     });
     const exited = once(server, "exit");
     try {
@@ -109,8 +114,11 @@ async function main() {
             return null;
           });
         if (reachable) {
-          assert.equal(reachable.status, 200);
-          assert.deepEqual(await reachable.json(), { status: "ok" });
+          assert.equal(reachable.status, 503);
+          const health = await reachable.json();
+          assert.equal(health.status, "degraded");
+          assert.equal(health.database.status, "degraded");
+          assert.ok(health.database.lastError);
           healthy = true;
           break;
         }

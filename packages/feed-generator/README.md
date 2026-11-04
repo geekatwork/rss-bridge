@@ -11,7 +11,9 @@ The feed-generator service exposes RSS feeds from normalized data stored in Post
 ## Endpoints
 
 - GET /health
-  - Returns a simple status payload.
+  - Runs a bounded database probe; returns HTTP 200 when ready or HTTP 503 when
+    the database is unavailable, including `database.status`, `lastError`, and
+    `lastSuccessAt`. A later successful probe restores database readiness.
 
 - GET /feeds
   - Returns available groups and feed paths.
@@ -54,6 +56,19 @@ Request flow:
 
 - PORT (optional, default 3100)
   - HTTP listen port.
+
+- DB_CONNECT_TIMEOUT_MS (optional, default 5000)
+  - Maximum pool acquisition/connection startup wait.
+
+- DB_QUERY_TIMEOUT_MS (optional, default 10000)
+  - Postgres statement deadline, including lock waits. A client read deadline one
+    second later also bounds unresponsive connections and evicts them from the pool.
+  - Limits are per query; a feed request can execute multiple queries sequentially.
+  - In Compose `.env`, use `FEED_DB_QUERY_TIMEOUT_MS` for this value.
+
+Timeouts must be positive integer milliseconds (maximum 2147482647); invalid
+values fail startup. Idle pool errors and query failures are logged and surfaced
+in database health; failed data requests still return errors rather than empty feeds.
 
 ## Local development
 

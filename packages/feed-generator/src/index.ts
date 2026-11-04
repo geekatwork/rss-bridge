@@ -2,6 +2,7 @@ import express from "express";
 import { Feed } from "feed";
 import { getAllGroups, getGroupBySourceId, getPostsByGroupId } from "./db.js";
 import { buildFeedUrl, isLandingOrGroupUrl } from "./utils.js";
+import { checkDatabase, getDatabaseHealth } from "./database.js";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3100", 10);
@@ -22,8 +23,12 @@ function resolveFeedBaseUrl(port: number): string {
 
 const FEED_BASE_URL = resolveFeedBaseUrl(PORT);
 
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
+app.get("/health", async (_req, res) => {
+  const ready = await checkDatabase();
+  res.status(ready ? 200 : 503).json({
+    status: ready ? "ok" : "degraded",
+    database: getDatabaseHealth(),
+  });
 });
 
 app.get("/feeds", async (_req, res) => {

@@ -1,8 +1,4 @@
-import { Pool } from "pg";
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+import { query } from "./database.js";
 
 export interface GroupRow {
   id: number;
@@ -23,7 +19,7 @@ export interface PostRow {
 }
 
 export async function getAllGroups(): Promise<GroupRow[]> {
-  const result = await pool.query<GroupRow>(
+  const result = await query<GroupRow>(
     "SELECT id, source_id, name, url FROM groups ORDER BY name"
   );
   return result.rows;
@@ -32,7 +28,7 @@ export async function getAllGroups(): Promise<GroupRow[]> {
 export async function getGroupBySourceId(
   sourceId: string
 ): Promise<GroupRow | null> {
-  const result = await pool.query<GroupRow>(
+  const result = await query<GroupRow>(
     "SELECT id, source_id, name, url FROM groups WHERE source_id = $1",
     [sourceId]
   );
@@ -43,7 +39,7 @@ export async function getPostsByGroupId(
   groupId: number,
   limit = 50
 ): Promise<PostRow[]> {
-  const result = await pool.query<PostRow>(
+  const result = await query<PostRow>(
     `SELECT id, source_post_id, author_name, content_text, content_html,
             link, image_urls, posted_at
      FROM posts

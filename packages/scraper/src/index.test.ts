@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setTimeout as setNodeTimeout } from "node:timers";
 import type { TaskContext } from "node-cron";
+import { checkDatabase, getDatabaseHealth } from "./database.js";
 
 const {
   scheduleMock,
@@ -46,6 +47,11 @@ vi.mock("./db.js", () => ({
   upsertItems: upsertItemsMock,
 }));
 
+vi.mock("./database.js", () => ({
+  checkDatabase: vi.fn().mockResolvedValue(true),
+  getDatabaseHealth: vi.fn(() => ({ status: "ok", lastError: null, lastSuccessAt: null })),
+}));
+
 vi.mock("./ScrapeEngine.js", () => ({
   ScrapeEngine: class {
     init = engineInitMock;
@@ -70,6 +76,8 @@ describe("scraper index startup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    vi.mocked(checkDatabase).mockResolvedValue(true);
+    vi.mocked(getDatabaseHealth).mockReturnValue({ status: "ok", lastError: null, lastSuccessAt: null });
 
     process.env = { ...originalEnv };
     delete process.env.SCRAPE_GROUPS;
@@ -245,6 +253,25 @@ describe("scraper index startup", () => {
     vi.spyOn(Date, "now").mockReturnValue(deadline + 1);
     expect(getHealthSnapshot().status).toBe("degraded");
     expect(getHealthSnapshot().jobs.every((job) => job.stale)).toBe(true);
+  });
+
+  it("reports database failures in readiness and recovers after a successful probe", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    const { getReadinessSnapshot, getHealthSnapshot } = await import("./index.js");
+    await flush();
+    await flush();
+    vi.mocked(checkDatabase).mockResolvedValueOnce(false);
+    vi.mocked(getDatabaseHealth).mockReturnValue({
+      status: "degraded", lastError: "Query read timeout", lastSuccessAt: null,
+    });
+    expect(getHealthSnapshot().status).toBe("degraded");
+    expect(await getReadinessSnapshot()).toMatchObject({
+      status: "degraded", database: { lastError: "Query read timeout" },
+    });
+    vi.mocked(getDatabaseHealth).mockReturnValue({ status: "ok", lastError: null, lastSuccessAt: null });
+    expect((await getReadinessSnapshot()).status).toBe("ok");
   });
 
   it("attempts engine cleanup when database setup fails", async () => {

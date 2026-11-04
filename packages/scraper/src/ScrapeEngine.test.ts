@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setTimeout as setNodeTimeout } from "node:timers";
 import type { ScrapeResult, SiteConfig } from "./core/types.js";
 
 const {
@@ -124,10 +125,12 @@ describe("ScrapeEngine", () => {
     await engine.init();
     engine.registerSite(enabledConfig("facebook"));
 
-    const result = await engine.scrapeOne("facebook");
+    const signal = new AbortController().signal;
+    const result = await engine.scrapeOne("facebook", signal);
 
     expect(registryGetMock).toHaveBeenCalledWith("facebook", expect.objectContaining({ siteId: "facebook" }));
     expect(scraperRunMock).toHaveBeenCalledTimes(1);
+    expect(scraperRunMock.mock.calls[0]?.[0]).toMatchObject({ signal });
     expect(result.site).toBe("facebook");
   });
 
@@ -166,5 +169,48 @@ describe("ScrapeEngine", () => {
     await engine.shutdown();
 
     expect(browserCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the browser if shutdown is requested during initialization", async () => {
+    let finishLaunch: ((browser: { close: typeof browserCloseMock }) => void) | undefined;
+    launchMock.mockImplementationOnce(() => new Promise((resolve) => {
+      finishLaunch = resolve;
+    }));
+    const engine = new ScrapeEngine();
+    const init = engine.init();
+    await engine.shutdown();
+    finishLaunch?.({ close: browserCloseMock });
+
+    await expect(init).rejects.toThrow("shutdown requested during initialization");
+    expect(browserCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs and rethrows browser close failures", async () => {
+    const closeError = new Error("browser close failed");
+    browserCloseMock.mockRejectedValueOnce(closeError);
+    const engine = new ScrapeEngine();
+    await engine.init();
+
+    await expect(engine.shutdown()).rejects.toThrow(closeError);
+    expect(logger.error).toHaveBeenCalledWith(
+      { error: closeError },
+      "Failed to close browser during shutdown"
+    );
+  });
+
+  it("shares an in-progress browser close between concurrent shutdown calls", async () => {
+    let finishClose: (() => void) | undefined;
+    browserCloseMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishClose = resolve;
+    }));
+    const engine = new ScrapeEngine();
+    await engine.init();
+
+    const firstShutdown = engine.shutdown();
+    const secondShutdown = engine.shutdown();
+    await Promise.resolve();
+    expect(browserCloseMock).toHaveBeenCalledTimes(1);
+    finishClose?.();
+    await Promise.all([firstShutdown, secondShutdown]);
   });
 });

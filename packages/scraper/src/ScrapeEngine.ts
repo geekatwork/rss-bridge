@@ -16,6 +16,8 @@ import { registerAllScrapers } from "./sites/index.js";
 export class ScrapeEngine {
   private logger: pino.Logger;
   private browser?: Browser;
+  private browserClosePromise?: Promise<void>;
+  private shutdownRequested = false;
   private siteConfigs: Map<string, SiteConfig> = new Map();
 
   constructor(logLevel: string = "info") {
@@ -26,7 +28,11 @@ export class ScrapeEngine {
   /**
    * Initialize the engine: launch browser.
    */
-  async init(): Promise<void> {
+  async init(signal?: AbortSignal): Promise<void> {
+    if (this.shutdownRequested) {
+      throw new Error("Cannot initialize ScrapeEngine after shutdown was requested");
+    }
+    signal?.throwIfAborted();
     this.logger.info("Initializing ScrapeEngine");
     this.browser = await puppeteer.launch({
       headless: true,
@@ -39,6 +45,11 @@ export class ScrapeEngine {
         "--disable-blink-features=AutomationControlled",
       ],
     });
+    if (signal?.aborted || this.shutdownRequested) {
+      await this.shutdown();
+      signal?.throwIfAborted();
+      throw new Error("ScrapeEngine shutdown requested during initialization");
+    }
     this.logger.info("Browser launched");
   }
 
@@ -53,8 +64,9 @@ export class ScrapeEngine {
   /**
    * Run a scrape job for a specific site.
    */
-  async scrapeOne(siteId: string): Promise<ScrapeResult> {
+  async scrapeOne(siteId: string, signal?: AbortSignal): Promise<ScrapeResult> {
     if (!this.browser) throw new Error("Engine not initialized");
+    signal?.throwIfAborted();
 
     const config = this.siteConfigs.get(siteId);
     if (!config) throw new Error(`Site not registered: ${siteId}`);
@@ -78,6 +90,7 @@ export class ScrapeEngine {
     const scraper = globalRegistry.get(siteId, config);
     const context: ScraperContext = {
       browser: this.browser,
+      signal,
       logger: this.logger.child({ siteId }),
       jobId: randomUUID(),
       startedAt: new Date(),
@@ -139,9 +152,18 @@ export class ScrapeEngine {
    * Shutdown: close browser.
    */
   async shutdown(): Promise<void> {
-    if (this.browser) {
-      await this.browser.close();
+    this.shutdownRequested = true;
+    if (this.browserClosePromise) return this.browserClosePromise;
+    const browser = this.browser;
+    this.browser = undefined;
+    if (!browser) return;
+
+    this.browserClosePromise = Promise.resolve().then(() => browser.close()).then(() => {
       this.logger.info("Browser closed");
-    }
+    }).catch((error: unknown) => {
+      this.logger.error({ error }, "Failed to close browser during shutdown");
+      throw error;
+    });
+    return this.browserClosePromise;
   }
 }

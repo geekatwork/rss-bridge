@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setTimeout as setNodeTimeout } from "node:timers";
 import type { TaskContext } from "node-cron";
 
 const {
@@ -76,6 +77,7 @@ describe("scraper index startup", () => {
     delete process.env.PRUNE_SCHEDULE;
     delete process.env.PRUNE_RETENTION_DAYS;
     delete process.env.SOURCE_COOKIE_FILE;
+    delete process.env.SCRAPE_GROUP_TIMEOUT_MS;
 
     vi.spyOn(global, "setTimeout").mockImplementation((cb: (...args: any[]) => void) => {
       cb();
@@ -169,7 +171,7 @@ describe("scraper index startup", () => {
       })
     );
 
-    expect(engineScrapeOneMock).toHaveBeenCalledWith("facebook");
+    expect(engineScrapeOneMock).toHaveBeenCalledWith("facebook", expect.any(AbortSignal));
     expect(upsertItemsMock).toHaveBeenCalledWith(101, expect.any(Array));
     expect(scheduleMock).toHaveBeenCalledWith("0 */2 * * *", expect.any(Function));
     expect(scheduleMock).toHaveBeenCalledWith("0 3 * * *", expect.any(Function));
@@ -239,6 +241,87 @@ describe("scraper index startup", () => {
     vi.spyOn(Date, "now").mockReturnValue(deadline + 1);
     expect(getHealthSnapshot().status).toBe("degraded");
     expect(getHealthSnapshot().jobs.every((job) => job.stale)).toBe(true);
+  });
+
+  it("attempts engine cleanup when database setup fails", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    ensureGroupMock.mockRejectedValueOnce(new Error("database setup failed"));
+
+    await import("./index.js");
+    await flush();
+    await flush();
+
+    expect(engineShutdownMock).toHaveBeenCalledTimes(1);
+    expect(engineInitMock).not.toHaveBeenCalled();
+  });
+
+  it("reports browser shutdown failures to scheduler health", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    ensureGroupMock.mockRejectedValueOnce(new Error("database setup failed"));
+    engineShutdownMock.mockRejectedValueOnce(new Error("browser shutdown failed"));
+
+    const { getHealthSnapshot } = await import("./index.js");
+    await flush();
+    await flush();
+
+    expect(engineShutdownMock).toHaveBeenCalledTimes(1);
+    expect(getHealthSnapshot().jobs[0]).toMatchObject({
+      lastSuccessAt: null,
+      lastError: "browser shutdown failed",
+    });
+  });
+
+  it("aborts timed-out scrapes and keeps the run lock until they settle", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    process.env.SCRAPE_GROUP_TIMEOUT_MS = "5";
+    let finishSetup: ((groupId: number) => void) | undefined;
+    ensureGroupMock.mockImplementationOnce(() => new Promise((resolve) => {
+      finishSetup = resolve;
+    }));
+
+    const { getHealthSnapshot } = await import("./index.js");
+    await new Promise((resolve) => setNodeTimeout(resolve, 20));
+    await flush();
+
+    expect(getHealthSnapshot().runInProgress).toBe(true);
+    expect(engineShutdownMock).toHaveBeenCalled();
+    expect(engineInitMock).not.toHaveBeenCalled();
+
+    finishSetup?.(101);
+    await flush();
+    await flush();
+
+    expect(getHealthSnapshot().runInProgress).toBe(false);
+    expect(getHealthSnapshot().groups[0]?.activeReasons).toContain("timeout");
+  });
+
+  it("passes the group timeout cancellation signal into the running scraper", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    process.env.SCRAPE_GROUP_TIMEOUT_MS = "5";
+    engineScrapeOneMock.mockImplementationOnce((_siteId, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+
+    const { getHealthSnapshot } = await import("./index.js");
+    await flush();
+    await flush();
+    expect(engineScrapeOneMock).toHaveBeenCalledWith("facebook", expect.any(AbortSignal));
+
+    await new Promise((resolve) => setNodeTimeout(resolve, 20));
+    await flush();
+    await flush();
+
+    expect(engineShutdownMock).toHaveBeenCalled();
+    expect(getHealthSnapshot().runInProgress).toBe(false);
+    expect(getHealthSnapshot().groups[0]?.activeReasons).toContain("timeout");
   });
 
   it("runs one catch-up cycle when node-cron reports missed scrape executions", async () => {

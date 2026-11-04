@@ -1283,7 +1283,7 @@ export class FacebookScraper extends SiteScraper {
         const pages = await context.browser.pages();
         for (const p of pages) {
           if (p !== this.page) {
-            await p.close().catch(() => {});
+            await p.close();
           }
         }
       } catch (e) {
@@ -1303,7 +1303,9 @@ export class FacebookScraper extends SiteScraper {
 
   async shutdown(context: ScraperContext): Promise<void> {
     if (this.page) {
-      await this.page.close().catch(() => {});
+      const page = this.page;
+      this.page = undefined;
+      if (!page.isClosed()) await page.close();
     }
     context.logger.debug({ site: this.config.siteId }, "Facebook scraper shutdown");
   }

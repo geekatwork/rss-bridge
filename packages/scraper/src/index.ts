@@ -12,6 +12,7 @@ import {
 import type { GroupConfig } from "./types.js";
 import { SchedulerDiagnostics, startRuntimeDiagnostics } from "./schedulerDiagnostics.js";
 import { scheduleWithRecovery } from "./recoverableSchedule.js";
+import { checkDatabase, getDatabaseHealth } from "./database.js";
 
 interface GroupConfigInput {
   groupId?: string;
@@ -46,6 +47,7 @@ interface HealthSnapshot {
   timestamp: string;
   groupsWithAlerts: number;
   jobs: ReturnType<SchedulerDiagnostics["snapshot"]>;
+  database: ReturnType<typeof getDatabaseHealth>;
   prune: {
     lastStartedAt: string | null;
     lastCompletedAt: string | null;
@@ -162,13 +164,15 @@ export function getHealthSnapshot(): HealthSnapshot {
 
   const groupsWithAlerts = groups.filter((group) => group.activeReasons.length > 0).length;
   const jobs = diagnostics.snapshot();
+  const database = getDatabaseHealth();
 
   return {
-    status: groupsWithAlerts > 0 || Boolean(pruneState.lastError) || jobs.some((job) => job.stale) ? "degraded" : "ok",
+    status: database.status === "degraded" || groupsWithAlerts > 0 || Boolean(pruneState.lastError) || jobs.some((job) => job.stale) ? "degraded" : "ok",
     runInProgress,
     timestamp: new Date().toISOString(),
     groupsWithAlerts,
     jobs,
+    database,
     prune: {
       lastStartedAt: pruneState.lastStartedAt,
       lastCompletedAt: pruneState.lastCompletedAt,
@@ -185,7 +189,7 @@ function startHealthServer(): void {
   }
 
   const healthPort = parsePositiveInteger(process.env.SCRAPER_HEALTH_PORT, 8081);
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     if (!req.url || req.url.split("?")[0] !== "/health") {
       res.statusCode = 404;
       res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -193,7 +197,7 @@ function startHealthServer(): void {
       return;
     }
 
-    const snapshot = getHealthSnapshot();
+    const snapshot = await getReadinessSnapshot();
     res.statusCode = snapshot.status === "ok" ? 200 : 503;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify(snapshot));
@@ -202,6 +206,13 @@ function startHealthServer(): void {
   server.listen(healthPort, "0.0.0.0", () => {
     console.log(`Health endpoint listening on port ${healthPort}`);
   });
+}
+
+export async function getReadinessSnapshot(): Promise<HealthSnapshot> {
+  const databaseReady = await checkDatabase();
+  const snapshot = getHealthSnapshot();
+  if (!databaseReady) snapshot.status = "degraded";
+  return snapshot;
 }
 
 async function scrapeGroup(config: GroupConfig): Promise<boolean> {

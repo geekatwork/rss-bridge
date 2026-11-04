@@ -4,6 +4,7 @@ const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
 
 vi.mock("pg", () => ({
   Pool: class {
+    on = vi.fn();
     query = queryMock;
   },
 }));

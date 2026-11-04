@@ -187,8 +187,34 @@ enabled regardless of this flag. Only the periodic runtime telemetry is disabled
 
 The internal scraper `GET /health` endpoint includes `jobs`, with per-group scrape
 and prune timestamps, last success/error, missed/skipped counts, and freshness.
-It returns HTTP 503 when any job is stale, in addition to existing alert conditions.
+It returns HTTP 503 when any job is stale, the database probe fails, or existing
+alert conditions apply. Both services probe Postgres with a bounded `SELECT 1` on
+`GET /health`, returning `database` status, last error, and last successful query
+time. Idle-client pool errors are logged as `database_pool_error`; query and
+connection errors as `database_query_error`. Failed calls still reject (no empty
+success fallback); subsequent successful queries can restore database health.
 Successful empty scrapes count as success; reported scraper errors do not.
+
+Database limits are configured per process:
+
+| Variable | Scraper default | Feed default |
+| --- | --- | --- |
+| `DB_CONNECT_TIMEOUT_MS` | 5000 | 5000 |
+| `DB_QUERY_TIMEOUT_MS` | 30000 | 10000 |
+
+Connection limits cover both pool acquisition and connection startup. Postgres
+`statement_timeout` cancels statements after the query limit, including lock waits;
+the client's read timeout is one second longer and evicts an unresponsive connection.
+These are per-query limits, not whole-request or whole-scrape budgets. Invalid
+values fail startup; only positive integers up to 2147482647 ms are accepted.
+In Compose `.env`, use `SCRAPER_DB_QUERY_TIMEOUT_MS` and `FEED_DB_QUERY_TIMEOUT_MS`
+to set service-specific query limits; `DB_CONNECT_TIMEOUT_MS` applies to both.
+If increasing the scraper limits, also increase `SCRAPER_HEALTHCHECK_TIMEOUT`
+(default `40s`) to exceed connection plus query limits plus one second.
+
+Run `npm run test:database` to build both services and test real `pg` clients
+against an isolated local protocol server: idle disconnects, unresponsive queries,
+pool exhaustion, startup timeouts, and recovery. No production database is used.
 
 Freshness allows the next cron occurrence plus 10 minutes of jitter and a full
 sequential scrape cycle (group count times the group timeout plus inter-group delay).
@@ -365,7 +391,8 @@ npm run test:docker-images
 
 These checks also run in CI. They compare installed package versions with the
 lockfile, reject development dependencies, launch Chromium as the scraper user on
-a read-only filesystem, and check RSS generation and the feed health endpoint.
+a read-only filesystem, and check RSS generation and a degraded feed health
+response when the database is unavailable.
 Test containers have no network access to other services and are removed afterward.
 
 To apply code or dependency changes to your Docker container:

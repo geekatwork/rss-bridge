@@ -14,9 +14,13 @@ function resolveFeedBaseUrl(port: number): string {
 
   try {
     const parsed = new URL(configured);
+    if (!["http:", "https:"].includes(parsed.protocol)
+      || parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error("Expected an HTTP(S) base URL without credentials, query or fragment");
+    }
     return parsed.toString().replace(/\/+$/, "");
   } catch {
-    console.warn(`Invalid FEED_BASE_URL "${configured}", falling back to ${fallback}`);
+    console.warn(`Invalid FEED_BASE_URL; expected an HTTP(S) URL without credentials, query or fragment, falling back to ${fallback}`);
     return fallback;
   }
 }

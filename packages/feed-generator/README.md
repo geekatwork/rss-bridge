@@ -24,7 +24,8 @@ The feed-generator service exposes RSS feeds from normalized data stored in Post
 
 - GET /feed/:groupId
   - Returns RSS XML for one group.
-  - Uses the request host/protocol to set channel link/id to the feed URL itself.
+  - Uses configured `FEED_BASE_URL` to set channel link/id to the feed URL itself.
+    Request host/protocol and forwarded headers are never used.
 
 ## Architecture
 
@@ -56,6 +57,21 @@ Request flow:
 
 - PORT (optional, default 3100)
   - HTTP listen port.
+
+- FEED_BASE_URL (optional)
+  - Public HTTP(S) origin with optional reverse-proxy path prefix, for example
+    `https://feeds.example.com:8443/rss`. Generates stable channel IDs/links such
+    as `https://feeds.example.com:8443/rss/feed/<groupId>`.
+  - Trailing slashes are removed; group IDs are URL-encoded.
+  - Standalone default: `http://localhost:${PORT}`. Compose default:
+    `http://localhost:${FEED_PORT:-3100}`, independent of container port 80.
+  - Set this explicitly for remote readers, a shared Docker network or a reverse
+    proxy. No URL is derived from request headers.
+  - Invalid URLs, non-HTTP(S) schemes, credentials, query strings and fragments
+    log a warning and retain the existing fallback to `http://localhost:${PORT}`.
+  - A proxy prefix affects generated URLs only: configure the proxy to strip it
+    before forwarding to the service's `/feed/...` routes. `/feeds` discovery
+    still returns service-relative routes, without that prefix.
 
 - DB_CONNECT_TIMEOUT_MS (optional, default 5000)
   - Maximum pool acquisition/connection startup wait.

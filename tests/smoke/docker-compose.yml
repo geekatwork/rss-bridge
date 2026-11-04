@@ -33,6 +33,7 @@ services:
     environment:
       DATABASE_URL: postgres://smoke:smoke-test-only@db:5432/smoke
       PORT: 3100
+      FEED_BASE_URL: https://feeds.example.test:8443/rss/base/
       DB_CONNECT_TIMEOUT_MS: 1000
       DB_QUERY_TIMEOUT_MS: 3000
     volumes:

@@ -313,8 +313,8 @@ describe("feed-generator routes", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "Internal server error" });
   });
 
-  it("GET /feed/:groupId uses trusted FEED_BASE_URL over request host", async () => {
-    process.env.FEED_BASE_URL = "https://feeds.example.com";
+  it("GET /feed/:groupId uses trusted FEED_BASE_URL with port and proxy prefix over request headers", async () => {
+    process.env.FEED_BASE_URL = "https://feeds.example.com:8443/rss/base/";
     await bootstrap();
 
     getGroupBySourceIdMock.mockResolvedValue({
@@ -324,22 +324,29 @@ describe("feed-generator routes", () => {
       url: "https://www.facebook.com/groups/12345",
     });
     getPostsByGroupIdMock.mockResolvedValue([]);
-    buildFeedUrlMock.mockReturnValue("https://feeds.example.com/feed/group-1");
+    const expectedUrl = "https://feeds.example.com:8443/rss/base/feed/group-1";
+    buildFeedUrlMock.mockReturnValue(expectedUrl);
 
     const req = {
       params: { groupId: "group-1" },
       protocol: "https",
       get: vi.fn(() => "evil.example.net"),
+      headers: { host: "evil.example.net", "x-forwarded-host": "evil.example.net", "x-forwarded-proto": "http" },
     };
     const res = makeRes();
 
     await routes["/feed/:groupId"](req, res);
 
-    expect(buildFeedUrlMock).toHaveBeenCalledWith("https://feeds.example.com", "group-1");
+    expect(buildFeedUrlMock).toHaveBeenCalledWith("https://feeds.example.com:8443/rss/base", "group-1");
+    expect(feedCtorMock).toHaveBeenCalledWith(expect.objectContaining({ id: expectedUrl, link: expectedUrl }));
+    expect(req.get).not.toHaveBeenCalled();
   });
 
-  it("falls back to localhost and logs warning for invalid FEED_BASE_URL", async () => {
-    process.env.FEED_BASE_URL = "::bad-url::";
+  it.each([
+    "::bad-url::", "ftp://example.com", "https://user:password@example.com",
+    "https://example.com?query=1", "https://example.com#fragment",
+  ])("falls back to localhost and logs warning for invalid FEED_BASE_URL %s", async (configured) => {
+    process.env.FEED_BASE_URL = configured;
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await bootstrap();
 
@@ -363,5 +370,6 @@ describe("feed-generator routes", () => {
 
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Invalid FEED_BASE_URL"));
     expect(buildFeedUrlMock).toHaveBeenCalledWith("http://localhost:3100", "group-1");
+    warnSpy.mockRestore();
   });
 });

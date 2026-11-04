@@ -88,6 +88,8 @@ describe("feed-generator utils", () => {
     expect(buildFeedUrl("https://example.com", "group-1")).toBe("https://example.com/feed/group-1");
     expect(buildFeedUrl("https://feeds.example.com/base/", "group-1")).toBe("https://feeds.example.com/base/feed/group-1");
     expect(buildFeedUrl("https://example.com", "group/a b")).toBe("https://example.com/feed/group%2Fa%20b");
+    expect(buildFeedUrl("https://feeds.example.com:8443/rss/base///", "group/a b"))
+      .toBe("https://feeds.example.com:8443/rss/base/feed/group%2Fa%20b");
   });
 
   it("flags Facebook photo fbid links as unreliable", () => {

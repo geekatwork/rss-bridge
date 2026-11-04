@@ -187,6 +187,20 @@ the competition ID and retain the original competitions.co.nz link.
 
 ## Feed Endpoints
 
+Set `FEED_BASE_URL` in Compose `.env` to the URL readers use, for example
+`https://feeds.example.com:8443/rss` for a reverse proxy, or
+`http://feed-generator` for readers on the shared Docker network. Channel IDs
+and links use that configured origin and prefix, never request/forwarded headers.
+Without an override, Compose uses `http://localhost:${FEED_PORT:-3100}`; this
+local-host default is not suitable for remote readers. Container port 80 remains
+unchanged. For proxy prefixes, configure the proxy to strip the prefix before
+forwarding; the service routes and relative discovery paths do not change.
+After changing the setting, recreate only the feed service:
+
+```bash
+docker compose up -d --no-deps feed-generator
+```
+
 - `GET /health` -> service health payload.
 - `GET /feeds` -> discover available feed routes.
 - `GET /feed/:groupId` -> RSS XML for one group.

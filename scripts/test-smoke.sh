@@ -27,6 +27,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 echo "[test-smoke] Building and starting isolated project $project..."
+node tests/smoke/assert-compose.mjs
 "${compose[@]}" up -d --build --wait --wait-timeout 120 db fixture feed-generator
 "${compose[@]}" up -d --build scraper scraper-broken
 

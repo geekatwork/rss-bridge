@@ -12,6 +12,8 @@
     "test:database": "npm run test:build && node scripts/test-database-reliability.mjs scraper && node scripts/test-database-reliability.mjs feed-generator",
     "test:unit": "npm run -w packages/scraper test:unit && npm run -w packages/feed-generator test:unit",
     "test:smoke": "bash scripts/test-smoke.sh",
+    "db:migrate": "bash scripts/migrate-database.sh",
+    "test:migrations": "bash scripts/test-migrations.sh",
     "test:all": "npm run test:build && npm run test:unit && npm run test:smoke"
   },
   "workspaces": [

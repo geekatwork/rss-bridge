@@ -164,9 +164,21 @@ The scraper logs JSON events alongside its existing scrape output:
   The scraper queues one immediate catch-up per missed scrape schedule (or prune job);
   repeated misses for that same schedule are coalesced, and catch-ups wait for any
   active scrape/prune cycle to finish.
-- `scheduler_runtime`: every 30 seconds, event-loop maximum/p99 delay, timer delay,
-  and wall-clock drift relative to the monotonic clock. Delays/drift above 2 seconds
-  produce warnings. These distinguish symptoms, not definitive causes of host suspension.
+- `scheduler_runtime`: when enabled with `SCRAPER_RUNTIME_DIAGNOSTICS=true`, samples
+  event-loop maximum/p99 delay, timer delay, and wall-clock drift every 30 seconds.
+  Delays/drift above 2 seconds produce warnings. These distinguish symptoms, not
+  definitive causes of host suspension. This sampling is disabled by default.
+
+To temporarily enable these samples, set `SCRAPER_RUNTIME_DIAGNOSTICS=true` in the
+Compose `.env` file and recreate the scraper:
+
+```bash
+docker compose up -d --force-recreate scraper
+```
+
+Set it to `false` (or remove the setting) and recreate the service again to stop
+the samples. Health reporting and scheduled/missed/recovered job diagnostics remain
+enabled regardless of this flag. Only the periodic runtime telemetry is disabled.
 
 The internal scraper `GET /health` endpoint includes `jobs`, with per-group scrape
 and prune timestamps, last success/error, missed/skipped counts, and freshness.

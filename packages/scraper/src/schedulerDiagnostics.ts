@@ -95,7 +95,16 @@ export class SchedulerDiagnostics {
   }
 }
 
-export function startRuntimeDiagnostics(): () => void {
+export function parseRuntimeDiagnosticsFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  if (/^true$/i.test(value.trim())) return true;
+  if (/^false$/i.test(value.trim())) return false;
+  throw new Error(`Invalid SCRAPER_RUNTIME_DIAGNOSTICS value "${value}". Expected "true" or "false".`);
+}
+
+export function startRuntimeDiagnostics(flagValue = process.env.SCRAPER_RUNTIME_DIAGNOSTICS): () => void {
+  if (!parseRuntimeDiagnosticsFlag(flagValue)) return () => undefined;
+
   const histogram = monitorEventLoopDelay({ resolution: 20 });
   histogram.enable();
   let previousWall = Date.now();

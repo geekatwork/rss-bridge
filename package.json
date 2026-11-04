@@ -8,6 +8,7 @@
     "dump:facebook-unresolved": "bash scripts/dump-facebook-unresolved.sh",
     "review:facebook-unresolved": "node scripts/render-facebook-unresolved-review.mjs",
     "test:build": "bash scripts/test-build.sh",
+    "test:docker-images": "bash scripts/test-docker-images.sh",
     "test:unit": "npm run -w packages/scraper test:unit && npm run -w packages/feed-generator test:unit",
     "test:smoke": "bash scripts/test-smoke.sh",
     "test:all": "npm run test:build && npm run test:unit && npm run test:smoke"

@@ -441,6 +441,56 @@ After that, TT-RSS can use feed URLs like:
 
 ## Redeploying to Docker
 
+### Legacy offline volume-name migration
+
+`scripts/migrate-volume.ps1` is only for moving an offline PostgreSQL 16 cluster
+between Docker volumes on the same host, architecture and compatible
+`postgres:16-alpine` environment. It is **not** a schema migration or major-version
+upgrade. For schema changes, use the procedure below. For other storage layouts,
+versions or platforms, use a planned logical dump/restore instead.
+
+Arrange an exclusive maintenance window. Stop **all** writers and every container
+attached to either volume, check that shutdown succeeded, and prevent automatic
+restarts or concurrent Docker operations until cutover is complete. The script
+does not stop/start the production stack for you. It refuses active volumes,
+unclean source shutdowns, symlinked storage (including external tablespaces),
+same-name volumes, unsupported major versions and nonempty destinations.
+It never overlays an existing cluster.
+
+From PowerShell with Docker available, specify the volume names and the original
+database superuser/database explicitly:
+
+```powershell
+.\scripts\migrate-volume.ps1 `
+  -OldVolume fb-to-rss_pgdata `
+  -NewVolume rss-bridge_pgdata `
+  -BackupDirectory /absolute/docker-host/backup-directory `
+  -DatabaseUser rss_bridge `
+  -DatabaseName rss_bridge
+```
+
+The backup directory must already exist, be writable and accessible to Docker
+bind mounts, have enough free space and be outside the repository. Use its
+Docker-host path (with Docker Desktop, a shared host directory). The script
+creates a uniquely named mode-600 compressed archive, verifies its compressed
+stream/archive listing, copies into an empty destination, and compares SHA-256
+hashes of all regular files. It starts only a temporary destination PostgreSQL
+container with no network access, runs `pg_amcheck` (installing its extension if
+needed) and queries application tables, then requires a clean shutdown.
+Every unexpected native Docker failure stops the procedure.
+
+Success leaves production services stopped, both volumes intact and the backup
+retained. Failure may leave a partial destination: do not start it, blindly retry
+over it, or remove the source. Diagnose the error and plan recovery with the
+backup/source preserved. Never restore an archive onto nonempty storage.
+After deliberate cutover, verify schema, application health, expected data and
+reader updates before acceptance; retain the old volume and backup until recovery
+has been tested. There is no automatic source-volume deletion.
+
+`npm run test:volume-migration` exercises disposable volumes and injected native
+Docker failures using containerized PowerShell. It requires Docker and pulls the
+PowerShell test image; it does not touch production volumes.
+
 ### Existing-volume database migrations
 
 PostgreSQL runs `db/*.sql` automatically only on an empty data directory. An

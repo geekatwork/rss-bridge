@@ -15,6 +15,7 @@
     "db:migrate": "bash scripts/migrate-database.sh",
     "test:migrations": "bash scripts/test-migrations.sh",
     "test:retention": "bash scripts/test-facebook-retention.sh",
+    "test:volume-migration": "node scripts/test-volume-migration.mjs",
     "test:all": "npm run test:build && npm run test:unit && npm run test:smoke"
   },
   "workspaces": [

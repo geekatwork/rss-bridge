@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setTimeout as setNodeTimeout } from "node:timers";
-import type { ScrapeResult, SiteConfig } from "./core/types.js";
+import type { ScrapeResult, ScraperContext, SiteConfig } from "./core/types.js";
 
 const {
   launchMock,
@@ -154,6 +154,73 @@ describe("ScrapeEngine", () => {
     expect(scraperRunMock).toHaveBeenCalledTimes(1);
     expect(scraperRunMock.mock.calls[0]?.[0]).toMatchObject({ signal });
     expect(result.site).toBe("facebook");
+  });
+
+  it.each([
+    ["facebook", "facebook"],
+    ["facebook", "reddit"],
+  ])("isolates overlapping %s/%s jobs on separate engines", async (firstSite, secondSite) => {
+    const firstClose = vi.fn().mockResolvedValue(undefined);
+    const secondClose = vi.fn().mockResolvedValue(undefined);
+    const firstBrowser = { close: firstClose };
+    const secondBrowser = { close: secondClose };
+    launchMock.mockResolvedValueOnce(firstBrowser).mockResolvedValueOnce(secondBrowser);
+    const contexts: ScraperContext[] = [];
+    const releases: Array<() => void> = [];
+    registryGetMock.mockImplementation((siteId: string, config: SiteConfig) => ({
+      run: async (context: ScraperContext): Promise<ScrapeResult> => {
+        contexts.push(context);
+        await new Promise<void>((resolve) => { releases.push(resolve); });
+        context.signal?.throwIfAborted();
+        return {
+          site: siteId, jobId: context.jobId, errors: [],
+          items: [{
+            sourceId: String(config.options.groupId), sourceSite: siteId,
+            title: null, contentText: null, contentHtml: null, authorName: null,
+            link: `https://example.test/${config.options.groupId}`, mediaUrls: [],
+            publishedAt: new Date(),
+          }],
+          startedAt: context.startedAt, completedAt: new Date(), durationMs: 1,
+          itemsExtracted: 1, linksResolved: 0, linksResolveFailed: 0,
+        };
+      },
+    }));
+    const first = new ScrapeEngine();
+    const second = new ScrapeEngine();
+    await Promise.all([first.init(), second.init()]);
+    first.registerSite({ ...enabledConfig(firstSite), options: { groupId: "first" } });
+    second.registerSite({ ...enabledConfig(secondSite), options: { groupId: "second" } });
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const firstRun = first.scrapeOne(firstSite, firstController.signal);
+    const secondRun = second.scrapeOne(secondSite, secondController.signal);
+    const failure = new Error("First job cancelled");
+    const firstRejected = expect(firstRun).rejects.toBe(failure);
+    try {
+      // Both jobs reached their barrier before either was released.
+      expect(contexts).toHaveLength(2);
+      expect(contexts[0].browser).toBe(firstBrowser);
+      expect(contexts[1].browser).toBe(secondBrowser);
+      expect(contexts[0].jobId).not.toBe(contexts[1].jobId);
+      expect(contexts[0].config).toEqual({ groupId: "first" });
+      expect(contexts[1].config).toEqual({ groupId: "second" });
+      firstController.abort(failure);
+      releases[0]();
+      await firstRejected;
+      await first.shutdown();
+      expect(firstClose).toHaveBeenCalledTimes(1);
+      expect(secondClose).not.toHaveBeenCalled();
+      expect(secondController.signal.aborted).toBe(false);
+      releases[1]();
+      const result = await secondRun;
+      expect(result.jobId).toBe(contexts[1].jobId);
+      expect(result.items.map((item) => item.sourceId)).toEqual(["second"]);
+      expect(result.errors).toEqual([]);
+    } finally {
+      for (const release of releases) release();
+      await Promise.allSettled([firstRun, secondRun]);
+      await Promise.all([first.shutdown(), second.shutdown()]);
+    }
   });
 
   it("scrapeAll collects failures and continues", async () => {

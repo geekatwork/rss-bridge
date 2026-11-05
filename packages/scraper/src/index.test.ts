@@ -403,6 +403,46 @@ describe("scraper index startup", () => {
     expect(getHealthSnapshot().groups[0]?.activeReasons).toContain("timeout");
   });
 
+  it("awaits group persistence and browser cleanup before starting the next group", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "First", url: "https://www.facebook.com/groups/12345" },
+      { groupId: "second", siteId: "reddit", name: "Second", url: "https://reddit.com/r/typescript" },
+    ]);
+    let finishPersistence: () => void = () => {};
+    let finishCleanup: () => void = () => {};
+    upsertItemsMock.mockImplementationOnce(() => new Promise<number>((resolve) => {
+      finishPersistence = () => resolve(1);
+    }));
+    engineShutdownMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    }));
+    const { getHealthSnapshot } = await import("./index.js");
+    try {
+      await flush();
+      await flush();
+      expect(upsertItemsMock).toHaveBeenCalledTimes(1);
+      expect(ensureGroupMock).toHaveBeenCalledTimes(1);
+      expect(engineShutdownMock).not.toHaveBeenCalled();
+      finishPersistence();
+      await flush();
+      await flush();
+      expect(engineShutdownMock).toHaveBeenCalledTimes(1);
+      expect(ensureGroupMock).toHaveBeenCalledTimes(1);
+      expect(getHealthSnapshot().runInProgress).toBe(true);
+      finishCleanup();
+      await flush();
+      await flush();
+      expect(ensureGroupMock).toHaveBeenCalledTimes(2);
+      expect(engineScrapeOneMock.mock.calls.map((call) => call[0])).toEqual(["facebook", "reddit"]);
+      expect(getHealthSnapshot().runInProgress).toBe(false);
+    } finally {
+      finishPersistence();
+      finishCleanup();
+      await flush();
+      await flush();
+    }
+  });
+
   it("passes the group timeout cancellation signal into the running scraper", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },

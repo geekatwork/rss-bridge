@@ -145,6 +145,102 @@ configurations, job IDs and browser ownership. Cancelling/closing one leaves the
 other able to finish. `index.test.ts` verifies persistence/cleanup serialization,
 overlap/prune exclusion and deadline settlement before releasing the run guard.
 
+## Separate browser container assessment
+
+### Recommendation
+
+Retain local Chromium as the default for now. A separate browser image is
+feasible, but is not a drop-in replacement for `puppeteer.launch()`: it changes
+group isolation, timeout termination, network access and deployment ownership.
+Implement it only as an explicit opt-in after the validation gates below pass.
+This assessment adds no remote-browser setting or Compose service.
+
+The current scraper image includes Chromium and launches a fresh browser per
+scheduled group. Chromium and Node share the scraper container's resource
+budget. A split can remove Chromium from the remote-only scraper image and give
+browser CPU/memory its own container limits, but adds connection/service failure
+modes and does not remove Node-side blocking or prove a scheduler reliability
+improvement. No image-size, memory or latency improvement is claimed without
+measurement.
+
+An older standalone browser container may exist on a host, but it is not part
+of the current Compose definition or engine connection path. Do not infer that
+the scraper uses it, reuse it without compatibility/session verification, or
+remove it as an orphan during deployment.
+
+### Lifecycle and isolation
+
+| Concern | Local default | Required remote design |
+| --- | --- | --- |
+| Allocation | Engine launches its own browser | Acquire a fresh, exclusively owned browser session per group, or define isolated contexts with provider-enforced termination |
+| Cookies | Fresh browser per group; plugin loads mounted cookies | Cookie injection occurs over the connection; no shared default context between groups |
+| Cleanup | Engine closes owned browser | Close only the owned session/context, await termination acknowledgement, then disconnect |
+| Deadline | Abort and browser close settle active work | Disconnect alone is insufficient: remote work can continue; provider must enforce a bounded session deadline and orphan cleanup |
+| Failure | Browser loss fails that group's work | Connection loss, browser restart and failed cleanup must surface in group health and prevent unsafe session reuse |
+
+Puppeteer's connected `browser.close()` sends `Browser.close` to the remote
+browser; it must not be used against a process shared with unrelated clients.
+`disconnect()` detaches the client without terminating the browser. A provider
+session API or exclusive per-connection browser must define what close means.
+Do not blindly reconnect/retry an in-progress extraction or persistence step.
+Retain current partial-result/error reporting and serialized scheduling.
+
+Plugins should continue receiving the same borrowed `context.browser`; session
+acquisition/release belongs in the engine, not individual plugins. Cookie files
+can remain mounted only in the scraper: cookies are sent through Puppeteer, not
+read by Chromium from that mount. Downloads, browser-side files and any future
+filesystem APIs need explicit remote storage handling.
+
+### Connectivity and resource boundaries
+
+- Use a dedicated internal control network. Never publish the DevTools/WebSocket
+  control endpoint publicly or put endpoint credentials into logs, examples or
+  committed configuration. Use authenticated access where the provider supports
+  it and TLS when crossing trusted local-network boundaries.
+- The browser needs outbound DNS/HTTPS for source pages and redirects; the
+  scraper still needs outbound access for API/HTTP plugins. An internal control
+  network alone cannot provide browser internet access; separate egress routing
+  must be configured. The browser must not receive database credentials or
+  unnecessary database-network access.
+- Browser-side `localhost` refers to the browser container, not the scraper.
+  Fixture services in smoke tests must be reachable from that container.
+  Container DNS and proxy/source allowlists must cover redirects and media.
+- Pin the browser/provider image and verify Chrome/DevTools compatibility with
+  the locked Puppeteer client. An old image labeled with a Puppeteer version is
+  not evidence of compatibility with the current client.
+- Set measured CPU/memory, shared-memory and writable-temp budgets, session
+  limits and queue timeouts. Queue/connect time counts toward the group deadline.
+  Splitting containers moves resource consumption; it does not eliminate it.
+  Define session expiry and quotas independently of scraper-client survival.
+- Preserve least-privilege operation and evaluate Chromium sandbox support for
+  the chosen image/runtime rather than mechanically copying local launch flags.
+
+### Deployment and validation gates
+
+1. Select a maintained, pinned provider/image and verify its session ownership,
+   termination and authentication contracts. Measure image size, peak memory,
+   CPU, connection latency and scrape duration against the local baseline.
+2. Add explicit local/remote mode validation with no silent fallback to local
+   Chromium on remote failure. Keep the current local configuration working.
+   A smaller remote-only image and a local image require deliberate build targets;
+   removing Chromium unconditionally would break the local default.
+3. Test fresh per-group cookies, same-site isolation, native clicks/popups,
+   timestamps, partial results, close failure, deadline termination, orphan
+   expiry, connection refusal/loss and browser-container restart. Confirm no
+   session survives a completed/failed group beyond its bounded expiry.
+4. Run the isolated smoke suite with browser-accessible fixture networking.
+   Extend readiness to validate actual session acquisition, not just a listening
+   socket; report remote outages without success-shaped fallback.
+5. Stage one group, then a complete cycle and scheduled recovery/prune. Roll out
+   only after an idle check, without restarting the database or feed generator.
+   Keep a documented local-mode rollback and drain/terminate owned remote sessions
+   before switching modes. Do not use `--remove-orphans` to manage unrelated
+   host containers.
+
+No additional deployment is required to accept this assessment. A remote-browser
+implementation should be a separate, explicitly approved change after these
+ownership and operational decisions are settled.
+
 ## Current File Structure
 
 ```text

@@ -634,6 +634,12 @@ optional TypeScript peer), preserving the workspace layout for nested dependenci
 Chromium is installed only in the scraper runtime; Puppeteer's separate browser
 download is disabled.
 
+The engine currently launches local Chromium; a separate browser container is
+not wired into this Compose stack. See the
+[separate-browser assessment](packages/scraper/ARCHITECTURE.md#separate-browser-container-assessment)
+for session ownership, connectivity, resource budgets and opt-in deployment
+validation required before changing that architecture.
+
 The scraper still runs as UID/GID `10001:10001`. Application files are root-owned
 and readable by that user; only the browser cache needs writable ownership. Builds
 do not recursively change ownership of application files or dependencies.

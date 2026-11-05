@@ -1,18 +1,20 @@
 // --- IMPORTS ---
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname } from "path";
+import { createHash } from "node:crypto";
 import type { ElementHandle, Page, Target } from "puppeteer";
 import { SiteScraper, type NormalizedItem, type ScraperContext, type SiteConfig } from "../../core/index.js";
 import { closeOwnedPage, parseTimestamp, sleep, textToParagraphHtml } from "../../core/utils.js";
 import { fetchPostsViaApi } from "./graphApi.js";
 import {
-  extractFacebookListingLink,
+  selectFacebookContentDestination,
   normalizeFacebookClickDestination,
 } from "./linkExtraction.js";
 import { isSocialMediaAssetUrl } from "@rss-bridge/link-policy";
-import { extractFacebookAlbumLinkFromImageUrls, extractFacebookPostLinkFromCandidates } from "./linkExtraction.js";
+import { extractFacebookAlbumLinkFromImageUrls } from "./linkExtraction.js";
 import type { NormalizedPost } from "../../types.js";
 import { findFacebookPost, type FacebookPostIdentity } from "./postIdentity.js";
+import { selectFacebookPosts } from "./postScope.js";
 import { ScraperConfigurationError, scraperErrorMessage } from "../../core/errors.js";
 
 // --- MAIN EXPORTS ---
@@ -249,7 +251,8 @@ export class FacebookScraper extends SiteScraper {
     if (!this.page) throw new Error("Page not initialized");
     const identity = this.getPostIdentity(item);
     if (!identity) return null;
-    const handle = await this.page.evaluateHandle(findFacebookPost, identity);
+    const scope = await this.page.evaluateHandle(selectFacebookPosts);
+    const handle = await scope.evaluateHandle(findFacebookPost, identity).finally(() => scope.dispose());
     const element = handle.asElement();
     if (element) return handle as ElementHandle<HTMLElement>;
     await handle.dispose();
@@ -436,9 +439,10 @@ export class FacebookScraper extends SiteScraper {
       ...(Array.isArray(captured) ? captured.filter((url): url is string => typeof url === "string") : []),
     ];
 
-    const { link: postLink, multipleInstagramLinks } = extractFacebookPostLinkFromCandidates(candidateHrefs);
-    if (multipleInstagramLinks) {
-      context.logger.warn({ id: item.sourceId, instagramLinks: multipleInstagramLinks }, "Multiple Instagram links in post candidates; picked most frequent");
+    const { link: postLink, ambiguous } = selectFacebookContentDestination(candidateHrefs);
+    if (ambiguous) {
+      context.logger.warn({ id: item.sourceId, reason: "ambiguous_content_destinations" }, "Post link unresolved; conflicting content destinations");
+      return false;
     }
     if (postLink) {
       item.link = postLink;
@@ -626,7 +630,8 @@ export class FacebookScraper extends SiteScraper {
     let prevCollectedCount = 0;
 
     const collectVisiblePosts = async () => {
-      const evaluatedPosts = await this.page!.evaluate((groupId: string) => {
+      const scope = await this.page!.evaluateHandle(selectFacebookPosts);
+      const { posts: evaluatedPosts, ambiguous } = await scope.evaluate((scope, groupId: string) => {
         const results: Array<{
           index: number;
           id: string;
@@ -638,31 +643,25 @@ export class FacebookScraper extends SiteScraper {
           time: string | null;
           needsLinkResolve: boolean;
           urlCandidates: string[];
-          htmlBlob: string;
+          stableText: string;
         }> = [];
 
-        // Mobile layout: posts live under screen-root > mainDiv > scrollDiv
-        const screenRoot = document.getElementById("screen-root");
-        if (!screenRoot) return results;
-        const mainDiv = screenRoot.children[0];
-        if (!mainDiv) return results;
-
-        let scrollDiv: Element | null = null;
-        for (let i = 0; i < mainDiv.children.length; i++) {
-          const child = mainDiv.children[i];
-          if ((child.textContent || "").trim().length > 200) {
-            scrollDiv = child;
-            break;
-          }
-        }
-        if (!scrollDiv) return results;
-
-        const feedChildren = Array.from(scrollDiv.children);
+        const feedChildren = scope.posts;
 
         for (let idx = 0; idx < feedChildren.length; idx++) {
           const child = feedChildren[idx];
           const fullText = (child.textContent || "").trim();
           if (fullText.length === 0) continue;
+          const stable = child.cloneNode(true) as HTMLElement;
+          stable.querySelectorAll("time, abbr, [data-utime]").forEach((el) => el.remove());
+          const walker = document.createTreeWalker(stable, NodeFilter.SHOW_TEXT);
+          const relativeTime = /^(?:\d+\s*(?:[smhdw]|seconds?|minutes?|mins?|hours?|hrs?|days?|weeks?)(?:\s+ago)?|yesterday|just now)$/i;
+          while (walker.nextNode()) {
+            if (relativeTime.test(walker.currentNode.textContent?.trim() || "")) {
+              walker.currentNode.textContent = "";
+            }
+          }
+          const stableText = (stable.textContent || "").replace(/\s+/g, " ").trim();
 
           // Author
           let author: string | null = null;
@@ -718,8 +717,6 @@ export class FacebookScraper extends SiteScraper {
             addCandidate(a.getAttribute("ajaxify"));
           }
 
-          const htmlBlob = (child as HTMLElement).innerHTML || "";
-
           // Fallback: scan all aria-label / title attrs for timestamp text
           if (!timeText) {
             for (const el of Array.from(child.querySelectorAll("[aria-label],[title]"))) {
@@ -774,16 +771,6 @@ export class FacebookScraper extends SiteScraper {
             }
           }
 
-          // Fallback ID
-          if (!postId) {
-            const hashStr = fullText.substring(0, 100);
-            let hash = 0;
-            for (let i = 0; i < hashStr.length; i++) {
-              hash = ((hash << 5) - hash + hashStr.charCodeAt(i)) | 0;
-            }
-            postId = `hash_${Math.abs(hash)}`;
-          }
-
           // Content text
           const contentText = fullText;
 
@@ -797,7 +784,7 @@ export class FacebookScraper extends SiteScraper {
           });
 
           const html = contentText ? `<p>${contentText.replace(/\n/g, "</p><p>")}</p>` : "";
-          const id = `fb_${postId}`;
+          const id = postId ? `fb_${postId}` : "";
 
           // Filter: only include posts with meaningful content (>15 chars) or with images.
           // Pseudo-post filtering is done outside page.evaluate in Node context.
@@ -813,30 +800,43 @@ export class FacebookScraper extends SiteScraper {
               time: timeText,
               needsLinkResolve,
               urlCandidates,
-              htmlBlob,
+              stableText,
             });
           }
         }
 
-        return results;
-      }, this.groupId || "");
+        return { posts: results, ambiguous: scope.ambiguous };
+      }, this.groupId || "").finally(() => scope.dispose());
+      if (ambiguous) {
+        context.logger.warn({ count: ambiguous, reason: "ambiguous_post_boundary" }, "Skipping ambiguous Facebook story containers");
+      }
 
       return evaluatedPosts.map((post) => {
-        let link = post.link;
-
-        if (!link) link = extractFacebookListingLink(post.urlCandidates, post.htmlBlob);
+        const destination = selectFacebookContentDestination([
+          ...post.urlCandidates, ...(post.link ? [post.link] : []),
+        ]);
+        if (destination.ambiguous) {
+          context.logger.warn({ reason: "ambiguous_content_destinations" }, "Post link unresolved; conflicting extracted content destinations");
+        }
 
         return {
           index: post.index,
-          id: post.id,
+          id: post.id || `fb_content_${createHash("sha256").update(JSON.stringify([
+            this.groupId, post.author, post.stableText,
+            [...new Set(post.images.map((raw) => {
+              const url = new URL(raw, "https://www.facebook.com");
+              return `${url.origin}${url.pathname}`;
+            }))].sort(),
+          ])).digest("hex")}`,
           author: post.author,
           text: post.text,
           html: post.html,
-          link,
+          link: destination.link,
           images: post.images,
           time: post.time,
           needsLinkResolve: post.needsLinkResolve,
           candidateUrls: post.urlCandidates,
+          ambiguousDestination: destination.ambiguous,
         };
       });
     };
@@ -852,6 +852,7 @@ export class FacebookScraper extends SiteScraper {
       time: string | null;
       needsLinkResolve: boolean;
       candidateUrls: string[];
+      ambiguousDestination: boolean;
     }>();
 
     const mergeVisiblePosts = (visiblePosts: Awaited<ReturnType<typeof collectVisiblePosts>>) => {
@@ -880,6 +881,11 @@ export class FacebookScraper extends SiteScraper {
         }
         existing.needsLinkResolve = existing.needsLinkResolve || post.needsLinkResolve;
         existing.candidateUrls = Array.from(new Set([...existing.candidateUrls, ...post.candidateUrls]));
+        const destination = selectFacebookContentDestination([
+          ...existing.candidateUrls, ...(existing.link ? [existing.link] : []), ...(post.link ? [post.link] : []),
+        ]);
+        existing.ambiguousDestination ||= post.ambiguousDestination || destination.ambiguous;
+        if (existing.ambiguousDestination) existing.link = null;
       }
     };
 
@@ -978,6 +984,7 @@ export class FacebookScraper extends SiteScraper {
           fbId: post.id, needsLinkResolve: post.needsLinkResolve,
           identity: { text: post.text, mediaUrls: post.images },
           candidateUrls: post.candidateUrls,
+          ambiguousDestination: post.ambiguousDestination,
         },
       };
     });
@@ -1023,6 +1030,10 @@ export class FacebookScraper extends SiteScraper {
     await sleep(3000);
 
     for (const item of itemsNeedingLinks) {
+      if (item.rawPayload?.ambiguousDestination) {
+        context.logger.warn({ id: item.sourceId, reason: "ambiguous_content_destinations" }, "Skipping resolution of ambiguous post");
+        continue;
+      }
       if (!this.isExpectedGroupPage(this.page.url(), this.groupId || "")) {
         throw new Error("Refusing to resolve links outside the configured Facebook group");
       }
@@ -1046,7 +1057,11 @@ export class FacebookScraper extends SiteScraper {
           await this.resolveLinkFromDomFallback(context, item, groupUrl);
           continue;
         }
-        const resolvedHref = extractFacebookPostLinkFromCandidates(snapshot.candidateUrls).link;
+        const { link: resolvedHref, ambiguous } = selectFacebookContentDestination(snapshot.candidateUrls);
+        if (ambiguous) {
+          context.logger.warn({ id: item.sourceId, reason: "ambiguous_content_destinations" }, "Skipping resolution of ambiguous post");
+          continue;
+        }
         if (resolvedHref) {
           item.link = resolvedHref;
           context.logger.info({ id: item.sourceId, link: resolvedHref }, "Resolved content link from verified post DOM");

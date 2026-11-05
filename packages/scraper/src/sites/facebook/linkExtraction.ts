@@ -203,6 +203,15 @@ export function extractFacebookListingLink(candidates: string[], htmlBlob: strin
   return embedded.postId ? embedded.link : null;
 }
 
+export function selectFacebookContentDestination(candidates: string[]): { link: string | null; ambiguous: boolean } {
+  const links = new Set<string>();
+  for (const candidate of candidates) {
+    const extracted = extractFacebookLinkFromCandidate(candidate);
+    if (extracted.link && extracted.postId) links.add(extracted.link);
+  }
+  return { link: links.size === 1 ? [...links][0] : null, ambiguous: links.size > 1 };
+}
+
 export function normalizeFacebookClickDestination(raw: string, groupUrl: string): string | null {
   try {
     const url = new URL(raw);

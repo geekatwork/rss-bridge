@@ -6,6 +6,7 @@ import pino from "pino";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FacebookScraper } from "./FacebookScraper.js";
 import { findFacebookPost, type FacebookPostIdentity } from "./postIdentity.js";
+import { selectFacebookPosts } from "./postScope.js";
 import type { NormalizedItem, ScraperContext } from "../../core/types.js";
 
 vi.mock("../../core/utils.js", async (importOriginal) => ({
@@ -26,6 +27,11 @@ describe("Facebook synthetic DOM link resolution", () => {
   let identity: FacebookPostIdentity;
   let item: NormalizedItem;
   let warnings: ReturnType<typeof vi.spyOn>;
+  async function findPost() {
+    const scope = await page.evaluateHandle(selectFacebookPosts);
+    try { return await scope.evaluateHandle(findFacebookPost, identity); }
+    finally { await scope.dispose(); }
+  }
 
   beforeAll(async () => {
     server = createServer((_request, response) => { response.end("<html><body>Synthetic popup</body></html>"); });
@@ -81,7 +87,7 @@ describe("Facebook synthetic DOM link resolution", () => {
       post.parentElement!.append(post);
       post.querySelector("img")!.src = "https://scontent.synthetic.fbcdn.net/post-a.png?token=two";
     });
-    const handle = await page.evaluateHandle(findFacebookPost, identity);
+    const handle = await findPost();
     try {
       expect(await page.evaluate((el: HTMLElement | null) => el?.id, handle)).toBe("post-a");
     } finally { await handle.dispose(); }
@@ -89,17 +95,17 @@ describe("Facebook synthetic DOM link resolution", () => {
 
   it("rejects recycled content, changed media and ambiguous duplicates", async () => {
     await page.$eval("#post-a img", (img) => { img.setAttribute("src", "https://scontent.synthetic.fbcdn.net/other.png"); });
-    let handle = await page.evaluateHandle(findFacebookPost, identity);
+    let handle = await findPost();
     expect(await page.evaluate((el: HTMLElement | null) => el === null, handle)).toBe(true);
     await handle.dispose();
     await page.setContent(fixture);
     await page.$eval("#post-a", (el) => { el.parentElement!.append(el.cloneNode(true)); });
-    handle = await page.evaluateHandle(findFacebookPost, identity);
+    handle = await findPost();
     expect(await page.evaluate((el: HTMLElement | null) => el === null, handle)).toBe(true);
     await handle.dispose();
     await page.setContent(fixture);
     await page.$eval("#post-a p", (el) => { el.textContent = "A recycled unrelated post"; });
-    handle = await page.evaluateHandle(findFacebookPost, identity);
+    handle = await findPost();
     expect(await page.evaluate((el: HTMLElement | null) => el === null, handle)).toBe(true);
     await handle.dispose();
   });
@@ -116,6 +122,145 @@ describe("Facebook synthetic DOM link resolution", () => {
     items = await scraper.extractItems(context);
     expect(items.find((row) => row.contentText?.includes("giveaway"))?.link)
       .toBe("https://www.facebook.com/groups/123456789/permalink/987654321/");
+  });
+
+    it("splits adjacent story cards inside a wrapper without borrowing a neighboring photo", async () => {
+      await page.evaluate(() => {
+        const feed = document.getElementById("feed")!;
+        const wrapper = document.createElement("div");
+        wrapper.append(...Array.from(feed.children));
+        feed.append(wrapper);
+        const link = document.createElement("a");
+        link.href = "/photo.php?fbid=987654321";
+        link.textContent = "Different giveaway photo";
+        document.getElementById("post-b")!.append(link);
+      });
+      const items = await scraper.extractItems(context);
+      expect(items).toHaveLength(2);
+      const first = items.find(row => row.contentText?.includes("giveaway description"))!;
+      const second = items.find(row => row.contentText?.includes("different synthetic post"))!;
+      expect(first.link).toBeNull();
+      expect(first.contentText).not.toContain("Different giveaway photo");
+      expect(first.mediaUrls).toHaveLength(1);
+      expect(second.link).toBe("https://www.facebook.com/photo.php?fbid=987654321");
+      first.rawPayload!.needsLinkResolve = false;
+      await scraper.resolveLinks(context, [first]);
+      expect(first.link).toBeNull();
+      const handle = await findPost();
+      expect(await page.evaluate(el => el?.id, handle)).toBe("post-a");
+      await handle.dispose();
+    });
+
+    it("skips nested shared stories rather than associating an inner photo with outer text", async () => {
+      await page.evaluate(() => {
+        const outer = document.getElementById("post-a")!;
+        const inner = document.getElementById("post-b")!;
+        const anchor = document.createElement("a");
+        anchor.href = "/photo.php?fbid=987654321";
+        inner.append(anchor);
+        outer.append(inner);
+      });
+      expect(await scraper.extractItems(context)).toEqual([]);
+      expect(warnings).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "ambiguous_post_boundary" }), expect.any(String),
+      );
+      const handle = await findPost();
+      expect(await page.evaluate(el => el === null, handle)).toBe(true);
+      await handle.dispose();
+    });
+
+    it("rejects unmarked containers with multiple story authors", async () => {
+      await page.evaluate(() => {
+        const feed = document.getElementById("feed")!;
+        feed.innerHTML = `<div>
+          <div aria-label="Unseen story from Synthetic A"></div><p>First synthetic post body</p>
+          <div aria-label="Unseen story from Synthetic B"></div><a href="/photo.php?fbid=987654321">Second synthetic post</a>
+        </div>`;
+      });
+      expect(await scraper.extractItems(context)).toEqual([]);
+      expect(warnings).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "ambiguous_post_boundary" }), expect.any(String),
+      );
+    });
+
+    it("does not turn a photo URL in hidden HTML into an associated post link", async () => {
+      await page.$eval("#post-a", el => {
+        el.setAttribute("data-unrelated-url", "https://www.facebook.com/photo.php?fbid=987654321");
+      });
+      const items = await scraper.extractItems(context);
+      expect(items.find(row => row.contentText?.includes("giveaway"))?.link).toBeNull();
+    });
+
+    it("retains conflicting photo destinations as unresolved rather than selecting the first", async () => {
+      await page.$eval("#post-a", el => {
+        for (const id of ["987654321", "111111111"]) {
+          const anchor = document.createElement("a");
+          anchor.href = `/photo.php?fbid=${id}`;
+          anchor.textContent = "Synthetic photo";
+          el.append(anchor);
+        }
+      });
+      const items = await scraper.extractItems(context);
+      const first = items.find(row => row.contentText?.includes("giveaway"))!;
+      expect(first.link).toBeNull();
+      await scraper.resolveLinks(context, [first]);
+      expect(first.link).toBeNull();
+      expect(warnings).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "ambiguous_content_destinations" }), expect.any(String),
+      );
+    });
+
+    it("keeps fallback identity stable when relative time and CDN tokens change", async () => {
+      await page.$eval("#post-a", el => {
+        const time = document.createElement("span");
+        time.id = "synthetic-time";
+        time.textContent = "15m";
+        el.prepend(time);
+      });
+      const before = (await scraper.extractItems(context)).find(row => row.contentText?.includes("giveaway"))!;
+      await page.$eval("#synthetic-time", el => { el.textContent = "3h"; });
+      await page.$eval("#post-a img", el => {
+        el.setAttribute("src", "https://scontent.synthetic.fbcdn.net/post-a.png?token=changed");
+      });
+      const after = (await scraper.extractItems(context)).find(row => row.contentText?.includes("giveaway"))!;
+      expect(before.sourceId).toMatch(/^fb_content_[a-f0-9]{64}$/);
+      expect(after.sourceId).toBe(before.sourceId);
+      await page.$eval("#post-a p", el => { el.textContent += " A different source story."; });
+      const changed = (await scraper.extractItems(context)).find(row => row.contentText?.includes("giveaway"))!;
+      expect(changed.sourceId).not.toBe(before.sourceId);
+    });
+  it("keeps role-based cards separate and ignores navigation text", async () => {
+    await page.evaluate(() => {
+      const post = document.getElementById("post-a")!;
+      const replacement = document.createElement("div");
+      replacement.id = post.id;
+      replacement.setAttribute("role", "article");
+      replacement.innerHTML = post.innerHTML;
+      post.replaceWith(replacement);
+      const nav = document.createElement("nav");
+      nav.innerHTML = `<div>${"Synthetic navigation ".repeat(20)}<a href="/photo.php?fbid=111111111">Unrelated navigation</a></div>`;
+      document.querySelector("main")!.prepend(nav);
+    });
+    const items = await scraper.extractItems(context);
+    expect(items).toHaveLength(2);
+    expect(items.every(row => !row.contentText?.includes("navigation"))).toBe(true);
+  });
+
+  it("rechecks conflicting destinations before click resolution even when identity text is unchanged", async () => {
+    await page.$eval("#post-a", el => {
+      for (const id of ["987654321", "111111111"]) {
+        const anchor = document.createElement("a");
+        anchor.href = `/photo.php?fbid=${id}`;
+        el.append(anchor);
+      }
+    });
+    await scraper.resolveLinks(context, [item]);
+    expect(item.link).toBeNull();
+    expect(page.url()).toBe(groupUrl);
+    expect(warnings).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "ambiguous_content_destinations" }), expect.any(String),
+    );
+    expect(browser.listenerCount("targetcreated")).toBe(0);
   });
 
   it("keeps native clicks and accepts a group permalink after DOM reordering", async () => {

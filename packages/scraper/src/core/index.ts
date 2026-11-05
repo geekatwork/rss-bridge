@@ -6,6 +6,7 @@ export {
   computeContentHash,
   canonicalizeUrl,
   sleep,
+  closeOwnedPage,
   retryWithBackoff,
   getJitteredDelay,
   extractDomain,

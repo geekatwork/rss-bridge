@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "fs";
 import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
 import type { ElementHandle, Page } from "puppeteer";
 import { canonicalizeUrl, SiteScraper, type NormalizedItem, type ScraperContext } from "../../core/index.js";
-import { textToParagraphHtml } from "../../core/utils.js";
+import { closeOwnedPage, textToParagraphHtml } from "../../core/utils.js";
 import { scraperErrorMessage } from "../../core/errors.js";
 
 const COMPETITIONS_NZ_BASE_URL = "https://www.competitions.co.nz";
@@ -783,7 +783,7 @@ export class CompetitionsNzScraper extends SiteScraper {
     const page = this.page;
     this.page = undefined;
     try {
-      if (page && !page.isClosed()) await page.close();
+      await closeOwnedPage(page);
     } finally {
       this.listingLoaded = false;
       this.usePagingFallback = false;

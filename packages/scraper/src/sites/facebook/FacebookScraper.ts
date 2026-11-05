@@ -6,11 +6,10 @@ import { SiteScraper, type NormalizedItem, type ScraperContext, type SiteConfig 
 import { closeOwnedPage, parseTimestamp, sleep, textToParagraphHtml } from "../../core/utils.js";
 import { fetchPostsViaApi } from "./graphApi.js";
 import {
-  extractFirstImageUrl,
   extractFacebookListingLink,
-  extractFacebookPageFallbackFromCandidates,
   normalizeFacebookClickDestination,
 } from "./linkExtraction.js";
+import { isSocialMediaAssetUrl } from "@rss-bridge/link-policy";
 import { extractFacebookAlbumLinkFromImageUrls, extractFacebookPostLinkFromCandidates } from "./linkExtraction.js";
 import type { NormalizedPost } from "../../types.js";
 import { findFacebookPost, type FacebookPostIdentity } from "./postIdentity.js";
@@ -454,20 +453,10 @@ export class FacebookScraper extends SiteScraper {
       return true;
     }
 
-    const pageLink = extractFacebookPageFallbackFromCandidates(candidateHrefs);
-    if (pageLink) {
-      item.link = pageLink;
-      context.logger.info({ id: item.sourceId, link: pageLink }, "Resolved page link from post content (fallback)");
-      return true;
-    }
-
-    const firstImage = extractFirstImageUrl(item.mediaUrls ?? []);
-    if (firstImage) {
-      item.link = firstImage;
-      context.logger.info({ id: item.sourceId, link: firstImage }, "Resolved link from first image URL (fallback)");
-      return true;
-    }
-
+    context.logger.warn(
+      { id: item.sourceId, reason: "no_verified_content_destination", mediaCount: item.mediaUrls.length },
+      "Post link unresolved; retaining content and media without a destination",
+    );
     await this.dumpUnresolvedFixture(item, groupUrl);
     return false;
   }
@@ -995,6 +984,12 @@ export class FacebookScraper extends SiteScraper {
   }
 
   async resolveLinks(context: ScraperContext, items: NormalizedItem[]): Promise<void> {
+    for (const item of items) {
+      if (item.link && isSocialMediaAssetUrl(item.link)) {
+        item.link = null;
+        context.logger.warn({ id: item.sourceId, reason: "social_media_asset" }, "Rejected media asset post destination");
+      }
+    }
     if (this.useApi) return;
     if (!this.page) throw new Error("Page not initialized");
 
@@ -1128,11 +1123,14 @@ export class FacebookScraper extends SiteScraper {
               resolved = true;
               break;
             }
-            context.logger.debug({ id: item.sourceId }, "Ignoring non-content popup destination");
+            context.logger.debug(
+              { id: item.sourceId, reason: isSocialMediaAssetUrl(newTabUrl) ? "social_media_asset" : "non_content_destination" },
+              "Ignoring non-content popup destination",
+            );
           }
 
           const currentUrl = this.page.url();
-          context.logger.info({ id: item.sourceId, currentUrl: currentUrl.substring(0, 80) }, "resolveLinks: page URL after click");
+          context.logger.debug({ id: item.sourceId }, "Checking in-page click destination");
 
           if (currentUrl === groupUrl) continue;
           const destination = normalizeFacebookClickDestination(currentUrl, groupUrl);
@@ -1146,7 +1144,10 @@ export class FacebookScraper extends SiteScraper {
             context.logger.info({ id: item.sourceId, link: destination }, "Resolved clicked link");
             resolved = true;
           } else {
-            context.logger.debug({ id: item.sourceId }, "Ignoring non-content in-page destination");
+            context.logger.debug(
+              { id: item.sourceId, reason: isSocialMediaAssetUrl(currentUrl) ? "social_media_asset" : "non_content_destination" },
+              "Ignoring non-content in-page destination",
+            );
           }
           break;
         }

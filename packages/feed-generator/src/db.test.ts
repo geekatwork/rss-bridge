@@ -99,6 +99,22 @@ describe("feed-generator db", () => {
     expect(await getPostsByGroupId(10, "https://example.test/groups/10")).toEqual([]);
   });
 
+  it("scans past CDN links before filling the eligible feed window", async () => {
+    const blocked = Array.from({ length: 100 }, (_, index) => ({
+      id: 200 - index,
+      link: `https://scontent.synthetic.${index % 2 ? "fbcdn.net" : "cdninstagram.com"}/image.jpg?token=${index}`,
+      cursor_posted_at: "2026-01-01 00:00:00.000123+00",
+    }));
+    const valid = [
+      { id: 100, link: "https://www.facebook.com/groups/123/posts/456/", image_urls: ["https://scontent.synthetic.fbcdn.net/image.jpg"] },
+      { id: 99, link: "https://www.instagram.com/p/Synthetic/" },
+      { id: 98, link: "https://example.test/competition.jpg?entry=required" },
+    ];
+    queryMock.mockResolvedValueOnce({ rows: blocked }).mockResolvedValueOnce({ rows: valid });
+    expect(await getPostsByGroupId(10, "https://www.facebook.com/groups/123/", 3)).toEqual(valid);
+    expect(queryMock).toHaveBeenCalledTimes(2);
+  });
+
   it("surfaces errors from later batches instead of returning a partial feed", async () => {
     queryMock.mockResolvedValueOnce({ rows: Array.from({ length: 100 }, (_, id) => ({
       id, link: null, cursor_posted_at: "2026-01-01 00:00:00+00",

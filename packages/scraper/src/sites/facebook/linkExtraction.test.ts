@@ -9,6 +9,29 @@ import {
 import { extractFacebookAlbumLinkFromImageUrls, extractFacebookPostLinkFromCandidates, extractFirstImageUrl } from "./linkExtraction.js";
 
 describe("Facebook real-world link extraction", () => {
+  it.each([
+    "https://scontent.synthetic.fbcdn.net/v/t39.30808-6/image.jpg?token=one",
+    "https://scontent.synthetic.fbcdn.net/v/t45.1600-4/image.jpg?token=two",
+    "https://scontent.synthetic.cdninstagram.com/image.jpg",
+    "https://www.instagram.com/synthetic-profile/",
+    "https://www.facebook.com/synthetic-profile/",
+  ])("rejects media and profile click destinations: %s", (url) => {
+    expect(normalizeFacebookClickDestination(url, "https://www.facebook.com/groups/123/")).toBeNull();
+  });
+
+  it.each([
+    "https://facebook.com.example.test/groups/123/posts/456/",
+    "https://instagram.com.example.test/p/Synthetic/",
+  ])("does not extract social content from lookalike hosts: %s", (url) => {
+    expect(extractFacebookLinkFromCandidate(url)).toEqual({ link: null, postId: null });
+    expect(normalizeFacebookClickDestination(url, "https://www.facebook.com/groups/123/")).toBe(url);
+  });
+
+  it("preserves legitimate external image-shaped content and query/hash parameters", () => {
+    const url = "https://example.test/competition.jpg?entry=required#form";
+    expect(normalizeFacebookClickDestination(url, "https://www.facebook.com/groups/123/")).toBe(url);
+  });
+
   it("extracts canonical photo links from real photo.php urls", () => {
     const actual = extractFacebookLinkFromCandidate(
       "https://www.facebook.com/photo.php?fbid=1508944807910427&set=a.123456789",

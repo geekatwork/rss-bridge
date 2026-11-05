@@ -1,5 +1,6 @@
 import { query } from "./database.js";
 import { isLandingOrGroupUrl } from "./utils.js";
+import { isSocialMediaAssetUrl } from "@rss-bridge/link-policy";
 
 export interface GroupRow {
   id: number;
@@ -60,7 +61,7 @@ export async function getPostsByGroupId(
     );
     for (const row of result.rows) {
       const link = row.link?.trim();
-      if (link && !isLandingOrGroupUrl(link, groupUrl)) {
+      if (link && !isSocialMediaAssetUrl(link) && !isLandingOrGroupUrl(link, groupUrl)) {
         const { cursor_posted_at, ...post } = row;
         posts.push({ ...post, link });
         if (posts.length === limit) return posts;

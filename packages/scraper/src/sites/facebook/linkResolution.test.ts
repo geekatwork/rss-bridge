@@ -136,7 +136,8 @@ describe("Facebook synthetic DOM link resolution", () => {
   it("does not click another post when the captured element is recycled", async () => {
     await page.$eval("#post-a p", (el) => { el.textContent = "An unrelated recycled post"; });
     await scraper.resolveLinks(context, [item]);
-    expect(item.link).toBe(identity.mediaUrls[0]);
+    expect(item.link).toBeNull();
+    expect(item.mediaUrls).toEqual(identity.mediaUrls);
     expect(page.url()).toBe(groupUrl);
     expect(warnings).toHaveBeenCalledWith(
       expect.objectContaining({ id: item.sourceId }), expect.stringContaining("identity"),
@@ -151,7 +152,8 @@ describe("Facebook synthetic DOM link resolution", () => {
       el.addEventListener("click", () => { location.href = "/groups/123456789/posts/111111111/"; });
     });
     await scraper.resolveLinks(context, [item]);
-    expect(item.link).toBe(identity.mediaUrls[0]);
+    expect(item.link).toBeNull();
+    expect(item.mediaUrls).toEqual(identity.mediaUrls);
     expect(page.url()).toBe(groupUrl);
     expect(warnings).toHaveBeenCalledWith(
       expect.objectContaining({ id: item.sourceId }), expect.stringContaining("blocked"),
@@ -174,4 +176,79 @@ describe("Facebook synthetic DOM link resolution", () => {
       expect(browser.listenerCount("targetcreated")).toBe(0);
     } finally { await unrelated.close(); }
   }, 20000);
+
+  it("retains image-only content as unresolved instead of using author or first-image fallback", async () => {
+    item.rawPayload!.needsLinkResolve = false;
+    await scraper.resolveLinks(context, [item]);
+    expect(item.link).toBeNull();
+    expect(item.mediaUrls).toEqual(identity.mediaUrls);
+    expect(item.contentText).toBe(identity.text);
+    expect(warnings).toHaveBeenCalledWith(
+      expect.objectContaining({ id: item.sourceId, reason: "no_verified_content_destination" }),
+      expect.stringContaining("unresolved"),
+    );
+  });
+
+  it("rejects an in-page CDN destination and returns to the group", async () => {
+    await page.$eval("#post-a", (el) => {
+      el.addEventListener("click", () => {
+        location.href = "https://scontent.synthetic.fbcdn.net/v/t39.30808-6/image.jpg?token=private";
+      });
+    });
+    const debug = vi.spyOn(context.logger, "debug");
+    await scraper.resolveLinks(context, [item]);
+    expect(item.link).toBeNull();
+    expect(item.mediaUrls).toEqual(identity.mediaUrls);
+    expect(page.url()).toBe(groupUrl);
+    expect(debug).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "social_media_asset" }),
+      "Ignoring non-content in-page destination",
+    );
+    expect(JSON.stringify([...debug.mock.calls, ...warnings.mock.calls])).not.toContain("token=private");
+    expect(browser.listenerCount("targetcreated")).toBe(0);
+  }, 20000);
+
+  it("rejects a CDN popup destination without closing unrelated pages", async () => {
+    const unrelated = await browser.newPage();
+    try {
+      await page.bringToFront();
+      const popupTarget = new Promise<import("puppeteer").Target>((resolve) => {
+        browser.once("targetcreated", resolve);
+      });
+      await page.$eval("#post-a", (el) => {
+        el.addEventListener("click", () => {
+          window.open("about:blank", "_blank");
+        });
+      });
+      const debug = vi.spyOn(context.logger, "debug");
+      const resolving = scraper.resolveLinks(context, [item]);
+      const popup = await (await popupTarget).page();
+      if (!popup) throw new Error("Synthetic popup page missing");
+      await popup.setRequestInterception(true);
+      popup.on("request", (request) => {
+        void request.respond({ status: 200, contentType: "text/html", body: "<html>Synthetic CDN asset</html>" });
+      });
+      await popup.goto("https://scontent.synthetic.cdninstagram.com/image.jpg?token=private", { waitUntil: "domcontentloaded" });
+      await resolving;
+      expect(item.link).toBeNull();
+      expect(item.mediaUrls).toEqual(identity.mediaUrls);
+      expect(unrelated.isClosed()).toBe(false);
+      expect(debug).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "social_media_asset" }),
+        "Ignoring non-content popup destination",
+      );
+      expect(browser.listenerCount("targetcreated")).toBe(0);
+    } finally { await unrelated.close(); }
+  }, 20000);
+
+  it("clears a previously extracted CDN link before verified resolution", async () => {
+    item.link = identity.mediaUrls[0];
+    item.rawPayload!.needsLinkResolve = false;
+    await scraper.resolveLinks(context, [item]);
+    expect(item.link).toBeNull();
+    expect(item.mediaUrls).toEqual(identity.mediaUrls);
+    expect(warnings).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "social_media_asset" }), "Rejected media asset post destination",
+    );
+  });
 });

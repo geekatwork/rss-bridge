@@ -14,3 +14,4 @@
 /packages/scraper/src/prune.ts @geekatwork
 /packages/scraper/src/core/ @geekatwork
 /packages/feed-generator/src/ @geekatwork
+/packages/link-policy/ @geekatwork

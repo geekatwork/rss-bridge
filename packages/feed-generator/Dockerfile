@@ -5,6 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/scraper/package.json ./packages/scraper/
 COPY packages/feed-generator/package.json ./packages/feed-generator/
+COPY packages/link-policy/ ./packages/link-policy/
 
 FROM dependencies AS build
 RUN npm ci --workspace=packages/feed-generator

@@ -6,7 +6,7 @@ The feed-generator service exposes RSS feeds from normalized data stored in Post
 
 - Serves health and discovery endpoints for available feeds.
 - Generates RSS 2.0 XML for a specific source group.
-- Filters out low-quality links that look like platform landing pages or root group pages.
+- Filters out missing, landing/group and Facebook/Instagram CDN media destinations.
 
 ## Endpoints
 
@@ -49,7 +49,7 @@ Request flow:
 2. Service loads group by source_id.
 3. Service fetches latest posts for the group's internal id.
 4. Service scans posts in batches of at most 100, ordered by publication date and
-   row ID descending, excluding null/blank and landing/group links before counting
+   row ID descending, excluding null/blank, landing/group and social CDN links before counting
    toward the 50-item output limit.
 5. Service emits RSS XML.
 
@@ -59,8 +59,14 @@ not an arbitrary raw-row cap, so newer ineligible rows cannot hide older valid
 items. Memory and each query result are bounded; total work depends on the number
 of ineligible rows scanned, and existing database timeouts still apply per query.
 Posts arriving ahead of the cursor during a request are picked up on the next
-request. Link eligibility rules are unchanged; unresolved-link quality is tracked
-separately in #23.
+request. The shared `@rss-bridge/link-policy` rejects `fbcdn.net` and
+`cdninstagram.com` hosts and their subdomains as item destinations, including
+already-persisted links. Images remain media, not post destinations. Other hosts
+are not rejected merely for an image-shaped path; legitimate social permalinks
+and external content links retain existing behavior.
+
+Unresolved posts remain stored but are excluded until a usable destination is
+available. This filter does not rewrite historical rows or reader history.
 
 ## Environment variables
 

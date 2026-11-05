@@ -1,11 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { describe, expect, it } from "vitest";
-import {
-  extractFacebookListingLink,
-  extractFacebookPageFallbackFromCandidates,
-} from "./linkExtraction.js";
-import { extractFacebookAlbumLinkFromImageUrls, extractFacebookPostLinkFromCandidates } from "./linkExtraction.js";
+import { extractFacebookAlbumLinkFromImageUrls, selectFacebookContentDestination } from "./linkExtraction.js";
 
 interface UnresolvedFacebookFixture {
   sourcePostId: string;
@@ -33,22 +29,9 @@ function loadFixtures(): UnresolvedFacebookFixture[] {
 }
 
 function replayFixture(fixture: UnresolvedFacebookFixture): string | null {
-  const initialLink = extractFacebookListingLink(fixture.candidateUrls, fixture.contentHtml || "");
-  if (initialLink) return initialLink;
-
-  if (fixture.candidateUrls.length > 0) {
-    const { link: postLink } = extractFacebookPostLinkFromCandidates(fixture.candidateUrls);
-    if (postLink) return postLink;
-    const albumLink = extractFacebookAlbumLinkFromImageUrls(fixture.imageUrls);
-    if (albumLink) return albumLink;
-    return extractFacebookPageFallbackFromCandidates(fixture.candidateUrls);
-  }
-
-  // Album fallback also runs when there are no candidateUrls
-  const albumLink = extractFacebookAlbumLinkFromImageUrls(fixture.imageUrls);
-  if (albumLink) return albumLink;
-
-  return null;
+  const destination = selectFacebookContentDestination(fixture.candidateUrls);
+  if (destination.ambiguous) return null;
+  return destination.link || extractFacebookAlbumLinkFromImageUrls(fixture.imageUrls);
 }
 
 describe("Facebook unresolved fixture replay", () => {

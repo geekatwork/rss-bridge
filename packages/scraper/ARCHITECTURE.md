@@ -308,6 +308,22 @@ Instagram content links. Neither author/profile links nor first-image URLs are
 used as unresolved-post fallbacks. Explicit photo IDs remain supported; IDs are
 never guessed from CDN filenames.
 
+Extraction and native-click reacquisition share the same story scope. Adjacent
+`article`/`role=article` cards inside a wrapper are separate items. Nested story
+cards or containers with multiple story-author headers are skipped with
+`ambiguous_post_boundary` rather than mixing their text and destinations.
+Unmarked single-story mobile containers remain supported. Conflicting concrete
+content destinations remain unresolved; URL frequency/order and hidden HTML
+photo IDs are not evidence of association.
+
+Posts without a source permalink use a group-scoped SHA-256 content fingerprint,
+including the full normalized story text and media origin/paths. Standalone
+relative-time text nodes and timestamp elements are excluded from this
+fingerprint; media query tokens do not affect it. This is a fallback identity,
+not proof that an edited post is unchanged. Existing `fb_hash_*` rows are not
+renamed or reconciled automatically. The new namespace prevents accidental
+updates to old uncertain associations; verified-link deduplication still applies.
+
 The shared `@rss-bridge/link-policy` workspace classifies `fbcdn.net` and
 `cdninstagram.com`, including their subdomains, as media hosts rather than post
 destinations. It is used by click resolution, persistence and feed eligibility.

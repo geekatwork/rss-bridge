@@ -16,6 +16,7 @@ const {
   engineRegisterSiteMock,
   engineScrapeOneMock,
   engineShutdownMock,
+  engineConstructorMock,
 } = vi.hoisted(() => ({
   scheduleMock: vi.fn(),
   scheduledTasks: [] as Array<{
@@ -32,6 +33,7 @@ const {
   engineRegisterSiteMock: vi.fn(),
   engineScrapeOneMock: vi.fn(),
   engineShutdownMock: vi.fn(),
+  engineConstructorMock: vi.fn(),
 }));
 
 vi.mock("node-cron", () => ({
@@ -55,6 +57,7 @@ vi.mock("./database.js", () => ({
 
 vi.mock("./ScrapeEngine.js", () => ({
   ScrapeEngine: class {
+    constructor(...args: unknown[]) { engineConstructorMock(...args); }
     init = engineInitMock;
     registerSite = engineRegisterSiteMock;
     scrapeOne = engineScrapeOneMock;
@@ -290,6 +293,30 @@ describe("scraper index startup", () => {
       siteId: "example-site",
       options: expect.objectContaining({ sourceUrl: "http://fixture:8080/" }),
     }));
+  });
+
+  it("joins scheduler, engine and persistence with one group execution run ID", async () => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([
+      { groupId: "12345", name: "Trace group", url: "https://www.facebook.com/groups/12345" },
+    ]);
+    const { getHealthSnapshot } = await import("./index.js");
+    await flush();
+    await flush();
+    const events = vi.mocked(console.log).mock.calls
+      .map(([line]) => String(line)).filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+    const start = events.find((event) => event.event === "job_started");
+    const persisted = events.find((event) => event.event === "posts_persisted");
+    const finish = events.find((event) => event.event === "job_finished");
+    expect(start.runId).toEqual(expect.any(String));
+    expect(persisted).toMatchObject({
+      runId: start.runId, groupId: "12345", siteId: "facebook", upserted: 1,
+    });
+    expect(finish.runId).toBe(start.runId);
+    expect(engineConstructorMock).toHaveBeenCalledWith("info", {
+      runId: start.runId, groupId: "12345", siteId: "facebook",
+    });
+    expect(getHealthSnapshot().jobs.find((job) => job.jobId === "scrape:12345")?.runId).toBe(start.runId);
+    expect(events.filter((event) => event.event === "job_started")).toHaveLength(1);
   });
 
   it.each([

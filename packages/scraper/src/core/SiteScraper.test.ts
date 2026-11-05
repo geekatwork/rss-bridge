@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { RecoverablePageError, SiteScraper } from "./SiteScraper.js";
 import type { NormalizedItem, ScraperContext, SiteConfig } from "./types.js";
 import { ScraperConfigurationError, ScraperStateError } from "./errors.js";
+import pino from "pino";
 
 class ControlledScraper extends SiteScraper {
   public listingCalls = 0;
@@ -106,6 +107,38 @@ describe("SiteScraper run lifecycle", () => {
     enabled: true,
     options: {},
   };
+
+  it("inherits run/group/job identity and page numbers in plugin-emitted logs", async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const logger = pino({ level: "debug" }, {
+      write(line: string) { records.push(JSON.parse(line)); },
+    }).child({ runId: "run-test", groupId: "group-test" });
+    const scraper = new ControlledScraper(config, [[makeItem("a")], [makeItem("b")]]);
+    const fetch = scraper.fetchListing.bind(scraper);
+    vi.spyOn(scraper, "fetchListing").mockImplementation(async (context) => {
+      context.logger.info({ method: "fetchListing" }, "Plugin phase");
+      await fetch(context);
+    });
+    const resolve = scraper.resolveLinks.bind(scraper);
+    vi.spyOn(scraper, "resolveLinks").mockImplementation(async (context, items) => {
+      context.logger.info({ method: "resolveLinks" }, "Plugin phase");
+      await resolve(context, items);
+    });
+    const result = await scraper.run(makeContext({ logger }));
+    expect(result.errors).toEqual([]);
+    const phases = records.filter((record) => record.msg === "Plugin phase");
+    expect(phases.length).toBeGreaterThan(0);
+    for (const record of phases) {
+      expect(record).toMatchObject({
+        runId: "run-test", groupId: "group-test", jobId: "job-1", siteId: "test-site",
+      });
+      expect([1, 2]).toContain(record.page);
+    }
+    expect(phases.filter((record) => record.method === "fetchListing").map((record) => record.page)).toEqual([1, 2]);
+    expect(records.find((record) => record.msg === "Initializing scraper")).toMatchObject({
+      runId: "run-test", groupId: "group-test", jobId: "job-1", siteId: "test-site",
+    });
+  });
 
   it("records unusual throws without losing items or skipping shutdown", async () => {
     const scraper = new ControlledScraper(config, [[makeItem("a")]]);

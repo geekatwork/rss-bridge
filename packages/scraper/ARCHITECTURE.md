@@ -241,6 +241,39 @@ No additional deployment is required to accept this assessment. A remote-browser
 implementation should be a separate, explicitly approved change after these
 ownership and operational decisions are settled.
 
+## Logging and traceability
+
+Plugins use only `context.logger` (Pino), not ad-hoc console logging. The engine
+binds scheduled `runId`, source `groupId` and `siteId` before browser setup.
+Each plugin job adds its existing random `jobId`; the base lifecycle adds a
+1-based `page` to contexts passed to fetch/extract/resolve and pagination methods.
+Initialization and shutdown have job context but no misleading page number.
+Direct engine callers without scheduler bindings still get site/job IDs.
+
+- `debug`: detailed phase, selector and pagination diagnostics.
+- `info`: ordinary progress, counts and healthy termination, including valid
+  empty-page stopping. Existing source-specific verbose logs remain compatible.
+- `warn`: recoverable/degraded conditions, page failures, unavailable link
+  resolution and deliberate fallback. A warning does not imply the job succeeded.
+- `error`: fatal setup, persistence, timeout, authentication or cleanup failures.
+  Retain the explicit alert/health state; formatting uses `scraperErrorMessage`
+  and must not serialize credentials, cookies or raw request payloads.
+
+The scheduler's existing `job_started`/`job_finished`/`job_failed` events and
+health job snapshots carry one fresh `runId` per actual group execution (and
+prune execution). Scheduler `jobId` remains the stable `scrape:<groupId>` or
+`prune` key; plugin `jobId` remains its unique UUID. `runId` joins these two
+identities through browser initialization, plugin logs, shutdown and the
+`posts_persisted` event, which also carries plugin `jobId`, source `groupId`,
+`siteId`, attempted item count and upsert count. Group start/alert compatibility
+messages include the run ID; other legacy scheduler console output is retained.
+
+No second scheduler lifecycle instrumentation is added. Missed/skipped events
+refer to scheduled jobs that may not have an actual run ID yet. CPU/event-loop
+telemetry remains controlled solely by `SCRAPER_RUNTIME_DIAGNOSTICS`; adding
+trace fields does not enable telemetry or change scheduler/alert behavior.
+Tracing is operational metadata, not a stored-post schema or RSS change.
+
 ## Current File Structure
 
 ```text

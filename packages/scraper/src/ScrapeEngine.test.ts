@@ -153,7 +153,15 @@ describe("ScrapeEngine", () => {
     expect(registryGetMock).toHaveBeenCalledWith("facebook", expect.objectContaining({ siteId: "facebook" }));
     expect(scraperRunMock).toHaveBeenCalledTimes(1);
     expect(scraperRunMock.mock.calls[0]?.[0]).toMatchObject({ signal });
+    expect(logger.child).toHaveBeenCalledWith({ siteId: "facebook", jobId: expect.any(String) });
     expect(result.site).toBe("facebook");
+  });
+
+  it("binds scheduler run/group identity before browser initialization", async () => {
+    const engine = new ScrapeEngine("info", { runId: "run-1", groupId: "group-1", siteId: "facebook" });
+    expect(logger.child).toHaveBeenCalledWith({ runId: "run-1", groupId: "group-1", siteId: "facebook" });
+    await engine.init();
+    await engine.shutdown();
   });
 
   it.each([

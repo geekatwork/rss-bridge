@@ -43,7 +43,7 @@ export interface ScraperContext {
   signal?: AbortSignal;
   /** Optional borrowed page; a plugin must not close it unless ownership is explicitly transferred. */
   page?: Page;
-  /** Structured logger (pino) */
+  /** Structured Pino logger; inherited run/group/site/job bindings and per-page lifecycle bindings. */
   logger: Logger;
   /** Job ID for this run */
   jobId: string;

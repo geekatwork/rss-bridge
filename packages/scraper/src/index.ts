@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { performance } from "node:perf_hooks";
 import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
@@ -176,20 +177,20 @@ export async function getReadinessSnapshot(): Promise<HealthSnapshot> {
   return snapshot;
 }
 
-async function scrapeGroup(config: GroupConfig): Promise<boolean> {
+async function scrapeGroup(config: GroupConfig, runId: string): Promise<boolean> {
   const siteId = config.siteId || inferSiteIdFromUrl(config.url);
   const groupTimeoutMs = parsePositiveInteger(process.env.SCRAPE_GROUP_TIMEOUT_MS, 20 * 60 * 1000);
   const alertState = getGroupAlertState(config.groupId, config.name);
   const controller = new AbortController();
-  const engine = new ScrapeEngine();
+  const engine = new ScrapeEngine("info", { runId, groupId: config.groupId, siteId });
   const failure: { reason: AlertReason } = { reason: "database_failure" };
   const alert = (reason: AlertReason, detail: string) => {
     const message = `[ALERT] ${config.name} (${config.groupId}) ${detail}`;
     setGroupAlert(config.groupId, config.name, reason, message);
-    console.error(message);
+    console.error(`${message} [runId=${runId}]`);
   };
   const isAuthFailure = (message: string) => /authentication failed|cookies are required/i.test(message);
-  console.log(`[${new Date().toISOString()}] Scraping group: ${config.name} (${config.groupId}) via ${siteId}`);
+  console.log(`[${new Date().toISOString()}] Scraping group: ${config.name} (${config.groupId}) via ${siteId} [runId=${runId}]`);
 
   const run = async (): Promise<boolean> => {
     const groupId = await ensureGroup(config);
@@ -231,7 +232,10 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
       failure.reason = "database_failure";
       const upserted = await upsertItems(groupId, result.items);
       controller.signal.throwIfAborted();
-      console.log(`  Upserted ${upserted} items into database`);
+      console.log(JSON.stringify({
+        event: "posts_persisted", runId, groupId: config.groupId, siteId,
+        jobId: result.jobId, items: result.items.length, upserted,
+      }));
     } else {
       console.log(`  No items found for ${config.name}`);
     }
@@ -296,10 +300,11 @@ async function runAllGroups(groups: GroupConfig[], scheduledAt: Date | null, tri
       const delay = getJitteredDelay(2000);
       await new Promise((r) => setTimeout(r, delay));
       const jobId = `scrape:${group.groupId}`;
-      diagnostics.started(jobId, scheduledAt, trigger);
+      const runId = randomUUID();
+      diagnostics.started(jobId, scheduledAt, trigger, runId);
       const started = performance.now();
       try {
-        const success = await scrapeGroup(group);
+        const success = await scrapeGroup(group, runId);
         diagnostics.completed(jobId, success, performance.now() - started);
       } catch (error) {
         diagnostics.completed(jobId, false, performance.now() - started, scraperErrorMessage(error));
@@ -379,7 +384,7 @@ async function triggerPrune(
   }
 
   runInProgress = true;
-  diagnostics.started("prune", scheduledAt, trigger);
+  diagnostics.started("prune", scheduledAt, trigger, randomUUID());
   const started = performance.now();
   pruneState.lastStartedAt = new Date().toISOString();
   pruneState.lastCompletedAt = null;

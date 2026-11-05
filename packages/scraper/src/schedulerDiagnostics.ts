@@ -9,6 +9,7 @@ interface JobState {
   lastCompletedAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
+  runId: string | null;
   skippedRuns: number;
   missedRuns: number;
   recoveredRuns: number;
@@ -32,6 +33,7 @@ export class SchedulerDiagnostics {
         jobId, schedule,
         lastScheduledAt: null, lastStartedAt: null, lastStartedScheduledAt: null, lastCompletedAt: null,
         lastSuccessAt: null, lastError: null, skippedRuns: 0, missedRuns: 0, recoveredRuns: 0,
+        runId: null,
         expectedCompletionBy: new Date((initial ? Date.now() : nextRun().getTime()) + allowanceMs).toISOString(),
       },
     });
@@ -63,14 +65,16 @@ export class SchedulerDiagnostics {
     console.warn(JSON.stringify({ event: "job_missed", jobId, observedAt: new Date().toISOString() }));
   }
 
-  started(jobId: string, scheduledAt: Date | null = null, trigger: "initial" | "scheduled" | "recovery" = "scheduled"): void {
+  started(jobId: string, scheduledAt: Date | null = null, trigger: "initial" | "scheduled" | "recovery" = "scheduled", runId: string | null = null): void {
     const { state } = this.job(jobId);
     if (trigger === "recovery") state.recoveredRuns++;
     state.lastStartedAt = new Date().toISOString();
     state.lastStartedScheduledAt = scheduledAt?.toISOString() ?? null;
+    state.runId = runId;
     console.log(JSON.stringify({
       event: "job_started", jobId, scheduledAt: state.lastStartedScheduledAt, startedAt: state.lastStartedAt,
       startDelayMs: scheduledAt ? Date.now() - scheduledAt.getTime() : null, trigger,
+      runId,
     }));
   }
 

@@ -25,8 +25,8 @@ export class ScrapeEngine {
   private shutdownRequested = false;
   private siteConfigs: Map<string, SiteConfig> = new Map();
 
-  constructor(logLevel: string = "info") {
-    this.logger = pino({ level: logLevel });
+  constructor(logLevel: string = "info", bindings: { runId?: string; groupId?: string; siteId?: string } = {}) {
+    this.logger = pino({ level: logLevel }).child(bindings);
     registerAllScrapers();
   }
 
@@ -92,12 +92,14 @@ export class ScrapeEngine {
       };
     }
 
+    const jobId = randomUUID();
+    const jobLogger = this.logger.child({ siteId, jobId });
     const scraper = globalRegistry.get(siteId, config);
     const context: ScraperContext = {
       browser: this.browser,
       signal,
-      logger: this.logger.child({ siteId }),
-      jobId: randomUUID(),
+      logger: jobLogger,
+      jobId,
       startedAt: new Date(),
       config: config.options,
       credentials: {
@@ -107,10 +109,10 @@ export class ScrapeEngine {
       maxItems: config.options.maxItems as number | undefined,
     };
 
-    this.logger.info({ siteId, jobId: context.jobId }, "Starting scrape job");
+    jobLogger.info({ siteId, jobId: context.jobId }, "Starting scrape job");
     const result = await scraper.run(context);
 
-    this.logger.info(
+    jobLogger.info(
       {
         siteId,
         jobId: context.jobId,

@@ -11,6 +11,7 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
+    "@rss-bridge/link-policy": "1.0.0",
     "axios": "1.16.0",
     "node-cron": "4.2.1",
     "pg": "8.20.0",

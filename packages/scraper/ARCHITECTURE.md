@@ -301,6 +301,27 @@ packages/scraper/src/
 └── types.ts
 ```
 
+## Social post destinations
+
+Facebook link resolution retains verified native clicks and concrete Facebook or
+Instagram content links. Neither author/profile links nor first-image URLs are
+used as unresolved-post fallbacks. Explicit photo IDs remain supported; IDs are
+never guessed from CDN filenames.
+
+The shared `@rss-bridge/link-policy` workspace classifies `fbcdn.net` and
+`cdninstagram.com`, including their subdomains, as media hosts rather than post
+destinations. It is used by click resolution, persistence and feed eligibility.
+Unresolved content and images remain stored with a null destination; warnings
+carry the inherited run/group/site/job context and a rejection reason, without
+expiring media query strings. A database boundary rejection also logs the group
+and source-post identity.
+
+A later verified link can replace a stored CDN link. A subsequent unresolved
+scrape does not erase an existing destination. Historical rows are not bulk
+rewritten: the feed excludes stored CDN links before its item limit, and any
+targeted repair requires separate approval. Existing reader history is not
+reset or deleted.
+
 ## Configuration
 
 ### SCRAPE_GROUPS

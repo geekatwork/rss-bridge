@@ -19,7 +19,12 @@ try {
       [groupId, `window-valid-${index}`, `https://article.example.test/window-${index}`]
     );
   }
-  const blockedLinks = [null, " ", "https://window.example.test/", `${groupUrl}/`];
+  const blockedLinks = [
+    null, " ", "https://window.example.test/", `${groupUrl}/`,
+    "https://scontent.synthetic.fbcdn.net/v/t39.30808-6/image.jpg",
+    "https://scontent.synthetic.cdninstagram.com/image.jpg",
+    "https://scontent.synthetic.fbcdn.net/v/t45.1600-4/image.jpg",
+  ];
   // Distinct blank/landing strings satisfy the production unique-link index.
   for (let index = 0; index < 120; index++) {
     const link = blockedLinks[index % blockedLinks.length];
@@ -46,6 +51,8 @@ try {
     previous = position;
   }
   assert.ok(!xml.includes("window-blocked-"));
+  assert.ok(!xml.includes("fbcdn.net"));
+  assert.ok(!xml.includes("cdninstagram.com"));
   await query("DELETE FROM posts WHERE group_id = $1 AND source_post_id LIKE 'window-valid-%'", [groupId]);
   assert.deepEqual(await getPostsByGroupId(groupId, groupUrl), []);
   const empty = await fetch(`http://127.0.0.1:3100/feed/${sourceId}`);

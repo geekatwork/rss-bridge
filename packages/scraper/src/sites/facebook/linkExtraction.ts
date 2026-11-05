@@ -1,3 +1,5 @@
+import { isSocialMediaAssetUrl } from "@rss-bridge/link-policy";
+
 export interface FacebookLinkExtractionResult {
   link: string | null;
   postId: string | null;
@@ -8,7 +10,7 @@ const FACEBOOK_BASE = "https://www.facebook.com";
 function unwrapRedirectTarget(raw: string): string | null {
   try {
     const parsed = new URL(raw, FACEBOOK_BASE);
-    if ((parsed.hostname.includes("l.facebook.com") || parsed.hostname.includes("facebook.com"))
+    if (/^(?:[^.]+\.)*facebook\.com$/i.test(parsed.hostname)
       && parsed.pathname.includes("/l.php")) {
       const target = parsed.searchParams.get("u");
       if (!target) return null;
@@ -27,7 +29,7 @@ function unwrapRedirectTarget(raw: string): string | null {
 export function isFacebookPageOrProfileLink(link: string): boolean {
   try {
     const parsed = new URL(link, FACEBOOK_BASE);
-    if (!parsed.hostname.includes("facebook.com")) return false;
+    if (!/^(?:[^.]+\.)*facebook\.com$/i.test(parsed.hostname)) return false;
 
     const path = parsed.pathname.replace(/\/+$/, "") || "/";
     const lower = path.toLowerCase();
@@ -74,7 +76,7 @@ export function extractFacebookLinkFromCandidate(raw: string): FacebookLinkExtra
     const path = parsed.pathname;
     const lowPath = path.toLowerCase();
 
-    if (host.includes("instagram.com")) {
+    if (/^(?:[^.]+\.)*instagram\.com$/i.test(host)) {
       const canonical = `${parsed.origin}${path}`;
       const match = canonical.match(/instagram\.com\/(p|reel)\/([A-Za-z0-9_-]+)/i);
       return {
@@ -83,7 +85,7 @@ export function extractFacebookLinkFromCandidate(raw: string): FacebookLinkExtra
       };
     }
 
-    if (!host.includes("facebook.com")) {
+    if (!/^(?:[^.]+\.)*facebook\.com$/i.test(host)) {
       return { link: null, postId: null };
     }
 
@@ -205,9 +207,10 @@ export function normalizeFacebookClickDestination(raw: string, groupUrl: string)
   try {
     const url = new URL(raw);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    if (isSocialMediaAssetUrl(raw)) return null;
     const extracted = extractFacebookLinkFromCandidate(raw);
     if (extracted.postId) return extracted.link;
-    if (/^(?:[^.]+\.)*facebook\.com$/i.test(url.hostname)) return null;
+    if (/^(?:[^.]+\.)*(?:facebook|instagram)\.com$/i.test(url.hostname)) return null;
     const group = new URL(groupUrl);
     if (url.origin === group.origin && url.pathname.replace(/\/+$/, "") === group.pathname.replace(/\/+$/, "")) {
       return null;

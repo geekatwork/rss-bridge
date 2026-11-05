@@ -55,6 +55,29 @@ describe("scraper db", () => {
     ]);
   });
 
+  it("retains content/media and rejects CDN destinations before duplicate-link checks", async () => {
+    const media = "https://scontent.synthetic.fbcdn.net/image.jpg?token=private";
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    queryMock.mockResolvedValue({ rowCount: 1 });
+    expect(await upsertItems(10, [makeItem({ link: media, mediaUrls: [media] })])).toBe(1);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(queryMock).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO posts"), [
+      10, "post-1", null, "content", null, null, JSON.stringify([media]),
+      new Date("2026-01-01T00:00:00Z"), false,
+    ]);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('"reason":"social_media_asset"'));
+    expect(JSON.stringify(warning.mock.calls)).not.toContain("token=private");
+  });
+
+  it("allows later verified resolution and preserves existing links when the new scrape is unresolved", async () => {
+    queryMock.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rowCount: 1 });
+    await upsertItems(10, [makeItem({ link: "https://www.instagram.com/p/Synthetic/" })]);
+    expect(queryMock).toHaveBeenLastCalledWith(
+      expect.stringContaining("link = COALESCE(EXCLUDED.link, posts.link)"),
+      expect.arrayContaining(["https://www.instagram.com/p/Synthetic"]),
+    );
+  });
+
   it("upsertPosts counts successful inserts and skips duplicate links", async () => {
     queryMock
       .mockResolvedValueOnce({ rows: [] })

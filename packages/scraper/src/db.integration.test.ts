@@ -39,6 +39,22 @@ it.skipIf(!databaseUrl)("enforces post integrity in an isolated PostgreSQL schem
       publishedAt: new Date(publishedAt), ...overrides,
     });
 
+    const media = "https://scontent.synthetic.fbcdn.net/image.jpg?token=synthetic";
+    await db.upsertItems(first, [item("media-only", "2026-10-01", { link: media, mediaUrls: [media] })]);
+    let mediaRow = (await client.query("SELECT * FROM posts WHERE source_post_id = 'media-only'")).rows[0];
+    expect(mediaRow.link).toBeNull();
+    expect(mediaRow.image_urls).toEqual([media]);
+    const verified = "https://www.instagram.com/p/Synthetic";
+    await db.upsertItems(first, [item("media-only", "2026-10-01", { link: verified, mediaUrls: [media] })]);
+    await db.upsertItems(first, [item("media-only", "2026-10-01", { mediaUrls: [media] })]);
+    mediaRow = (await client.query("SELECT * FROM posts WHERE source_post_id = 'media-only'")).rows[0];
+    expect(mediaRow.link).toBe(verified);
+    expect(mediaRow.image_urls).toEqual([media]);
+    await client.query("UPDATE posts SET link = $1 WHERE source_post_id = 'media-only'", [media]);
+    await db.upsertItems(first, [item("media-only", "2026-10-01", { link: verified, mediaUrls: [media] })]);
+    mediaRow = (await client.query("SELECT * FROM posts WHERE source_post_id = 'media-only'")).rows[0];
+    expect(mediaRow.link).toBe(verified);
+
     await db.upsertItems(first, [item("fallback", "2026-11-01")]);
     await db.upsertItems(first, [item("fallback", "2026-11-02")]);
     let row = (await client.query("SELECT * FROM posts WHERE source_post_id = 'fallback'")).rows[0];

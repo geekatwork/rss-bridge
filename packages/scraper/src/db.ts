@@ -3,6 +3,7 @@ import type { NormalizedPost, GroupConfig } from "./types.js";
 import type { NormalizedItem } from "./core/index.js";
 import { canonicalizeUrl } from "./core/utils.js";
 import { FACEBOOK_GROUP_URL_PATTERN } from "./facebookGroups.js";
+import { isSocialMediaAssetUrl } from "@rss-bridge/link-policy";
 
 export { closeDb } from "./database.js";
 
@@ -49,7 +50,13 @@ async function persistPost(groupId: number, post: PersistablePost): Promise<numb
   if (!Number.isFinite(post.postedAt.getTime())) {
     throw new Error(`Invalid publication date for source post: ${post.sourcePostId}`);
   }
-  const normalizedLink = normalizeLink(post.link);
+  const isMediaAsset = Boolean(post.link && isSocialMediaAssetUrl(post.link));
+  const normalizedLink = isMediaAsset ? null : normalizeLink(post.link);
+  if (isMediaAsset) {
+    console.warn(JSON.stringify({
+      event: "post_link_rejected", groupId, sourcePostId: post.sourcePostId, reason: "social_media_asset",
+    }));
+  }
 
   if (normalizedLink) {
     const existingByLink = await query<ExistingPostRow>(
@@ -74,7 +81,7 @@ async function persistPost(groupId: number, post: PersistablePost): Promise<numb
          author_name = EXCLUDED.author_name,
          content_text = EXCLUDED.content_text,
          content_html = EXCLUDED.content_html,
-         link = EXCLUDED.link,
+         link = COALESCE(EXCLUDED.link, posts.link),
          image_urls = EXCLUDED.image_urls,
          posted_at = CASE WHEN EXCLUDED.posted_at_is_source THEN EXCLUDED.posted_at ELSE posts.posted_at END,
          posted_at_is_source = posts.posted_at_is_source OR EXCLUDED.posted_at_is_source,

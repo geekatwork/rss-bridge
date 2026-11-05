@@ -9,6 +9,7 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
+    "@rss-bridge/link-policy": "1.0.0",
     "express": "5.2.1",
     "feed": "4.2.2",
     "pg": "8.20.0"

@@ -1,0 +1,11 @@
+{
+  "name": "@rss-bridge/link-policy",
+  "version": "1.0.0",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  }
+}

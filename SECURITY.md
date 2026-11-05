@@ -29,13 +29,12 @@ updates and private reporting are enabled. These do not guarantee detection
 of every secret or vulnerability; dependency updates require review and merge.
 
 `main` requires a pull request, up-to-date `build` and `smoke` checks from GitHub
-Actions, and resolved review conversations. Protection applies to
-administrators; force pushes and branch deletion are disabled.
+Actions, and resolved review conversations. An approving review and code-owner
+approval are not required. Protection applies to administrators; force pushes
+and branch deletion are disabled.
 
-Sensitive paths have [CODEOWNERS](.github/CODEOWNERS). Mandatory approval and
-code-owner review are deferred until an additional eligible reviewer is
-available: the sole owner cannot approve their own pull requests. Story #7
-therefore retains this acceptance gap.
+Sensitive paths have [CODEOWNERS](.github/CODEOWNERS) for ownership visibility;
+CODEOWNERS entries do not gate merging.
 
 Actions use read-only workflow permissions and cannot approve pull requests.
 Only GitHub-owned actions are allowed, and all outside collaborators require

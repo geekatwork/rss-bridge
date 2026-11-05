@@ -10,6 +10,9 @@ for (const [port, configured, expected] of [
     ...process.env,
     POSTGRES_PASSWORD: "compose-test-only",
     SCRAPE_GROUPS: "[]",
+    SOURCE_COOKIE_FILE: "/app/cookies/test-only.json",
+    SCRAPE_GROUP_TIMEOUT_MS: "12345",
+    FACEBOOK_BOUNDARY_FALLBACK_LIMIT: "75",
   };
   delete env.FEED_PORT;
   delete env.FEED_BASE_URL;
@@ -21,5 +24,8 @@ for (const [port, configured, expected] of [
   assert.equal(config.services["feed-generator"].environment.FEED_BASE_URL, expected);
   assert.equal(Number(config.services["feed-generator"].environment.PORT), 80);
   assert.equal(String(config.services["feed-generator"].ports[0].published), port ?? "3100");
+  assert.equal(config.services.scraper.environment.SOURCE_COOKIE_FILE, "/app/cookies/test-only.json");
+  assert.equal(Number(config.services.scraper.environment.SCRAPE_GROUP_TIMEOUT_MS), 12345);
+  assert.equal(Number(config.services.scraper.environment.FACEBOOK_BOUNDARY_FALLBACK_LIMIT), 75);
 }
 console.log("[test-smoke] Production Compose public feed URLs verified without starting services");

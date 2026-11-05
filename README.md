@@ -150,6 +150,58 @@ Schema uses source-generic identifiers:
 - `siteId` (optional; inferred from URL hostname if omitted)
 - `name`
 - `url`
+- `options` (optional; validated source-specific settings below)
+
+Each entry describes one source group; `groupId`/aliases remain the global
+persistence identity. Names and identifiers must be nonempty strings, IDs must
+be unique, and URLs must use HTTP(S) without embedded credentials. Invalid
+configuration fails startup before browser/database work. Unknown plugin IDs
+without options still report the existing runtime scrape failure.
+
+Source adapters pass `url` as the listing `sourceUrl`. Facebook uses its configured
+host/path/query, adding chronological sorting; its group identifier must match
+the `/groups/<identifier>` URL. Reddit derives exactly one subreddit from a
+supported reddit.com `/r/<name>` URL (use separate entries for separate
+subreddits). Competitions NZ uses the configured listing path on
+competitions.co.nz; example-site uses its configured HTTP(S) fixture/source URL.
+Competitions NZ hostname inference now maps to `competitions-nz`.
+
+Supported `options`:
+
+| Source | Options |
+|---|---|
+| Facebook | `cookieFile`, `maxItems`, `boundaryFallbackLimit`, `maxCollectedPosts`, `scrollAttempts`, `boundaryMinimumMarkerIndex`, `debugHrefs`, `unresolvedDumpFile` |
+| Reddit | `maxItems`, `maxPages`, `limit` (25–100), `sort` (`hot`, `new`, `top`), `timeFilter` (`day`, `week`, `month`, `year`, `all`) |
+| Competitions NZ | `cookieFile`, `maxItems` |
+| example-site | `maxItems`, `maxPages` |
+
+Numeric options must be positive integers (maximum 2147482647), except
+`boundaryMinimumMarkerIndex`, which may be zero. `debugHrefs` is boolean; file
+paths are nonempty strings **inside the container**. Unsupported options fail
+startup rather than being silently discarded. `sourceUrl`, `groupIds`,
+`subreddits` and `stopAtSourceId` cannot be supplied in options: the group URL,
+identity and database boundary are authoritative. Graph API access tokens and
+arbitrary plugin options are not exposed by this scheduled configuration contract.
+
+Per-group `options.cookieFile` overrides global `SOURCE_COOKIE_FILE`, then plugin
+cookie defaults apply. Facebook per-group collection/boundary settings override
+`FACEBOOK_BOUNDARY_FALLBACK_LIMIT` (default 50). Compose forwards both global
+settings and `SCRAPE_GROUP_TIMEOUT_MS` (default 1200000, whole-group deadline).
+Set these in `.env` and recreate only the scraper when deploying configuration
+changes. Dump paths require an explicitly writable mounted location; the
+production scraper filesystem is read-only.
+
+Example Reddit entry:
+
+```json
+{
+  "groupId": "reddit-typescript",
+  "siteId": "reddit",
+  "name": "TypeScript",
+  "url": "https://reddit.com/r/typescript/",
+  "options": { "sort": "new", "limit": 50, "maxPages": 1 }
+}
+```
 
 Example:
 

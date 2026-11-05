@@ -292,6 +292,20 @@ describe("scraper index startup", () => {
     }));
   });
 
+  it.each([
+    { groupId: "r", siteId: "reddit", name: "Reddit", url: "https://reddit.com/r/typescript", options: { sort: "new", limit: 25 }, expected: { subreddits: ["typescript"], sort: "new", limit: 25 } },
+    { groupId: "c", siteId: "competitions-nz", name: "Competitions", url: "https://www.competitions.co.nz/category/new/", options: { cookieFile: "/app/cookies/custom.json" }, expected: { cookieFile: "/app/cookies/custom.json" } },
+    { groupId: "123", siteId: "facebook", name: "Facebook", url: "https://m.facebook.com/groups/123", options: { maxCollectedPosts: 10, scrollAttempts: 5 }, expected: { groupIds: ["123"], maxCollectedPosts: 10, scrollAttempts: 5 } },
+  ])("forwards validated $siteId options from scheduled startup", async ({ expected, ...group }) => {
+    process.env.SCRAPE_GROUPS = JSON.stringify([group]);
+    await import("./index.js");
+    await flush();
+    await flush();
+    expect(engineRegisterSiteMock).toHaveBeenCalledWith(expect.objectContaining({
+      siteId: group.siteId, options: expect.objectContaining({ ...expected, sourceUrl: group.url }),
+    }));
+  });
+
   it("reports per-job success and stale freshness in health", async () => {
     process.env.SCRAPE_GROUPS = JSON.stringify([
       { groupId: "12345", name: "My Group", url: "https://www.facebook.com/groups/12345" },

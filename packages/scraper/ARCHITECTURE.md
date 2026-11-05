@@ -33,6 +33,10 @@ Design goals:
   - Registers site configs
   - Creates scraper instance via registry
   - Builds `ScraperContext` and executes scraper `run()`
+- `src/sourceConfig.ts`
+  - Validates scheduled group inputs and source-specific options
+  - Maps authoritative group URLs/identifiers into plugin options
+  - Applies per-group option precedence and database incremental boundaries
 - `src/core/SiteScraper.ts`
   - Abstract lifecycle contract:
     - `canHandle()`
@@ -88,6 +92,14 @@ packages/scraper/src/
 - `siteId` (optional; inferred from URL hostname if omitted)
 - `name`
 - `url`
+- `options` (optional; source-specific validated settings)
+
+See the root [SCRAPE_GROUPS contract](../../README.md#scrape_groups-format) for
+supported options and examples. Invalid options/identities fail startup rather
+than being silently discarded. Reddit derives one subreddit per configured URL;
+Competitions NZ and example-site receive the listing URL; Facebook preserves
+the configured group URL and enforces chronological sorting. Database-derived
+incremental boundaries cannot be overridden in options.
 
 Example:
 
@@ -106,6 +118,8 @@ Example:
 
 - `SCRAPE_SCHEDULE` (cron, default `0 */2 * * *`)
 - `SOURCE_COOKIE_FILE` (optional; passed to site scraper)
+- `SCRAPE_GROUP_TIMEOUT_MS` (whole-group deadline, default 1200000)
+- `FACEBOOK_BOUNDARY_FALLBACK_LIMIT` (default 50)
 - `PUPPETEER_EXECUTABLE_PATH` (optional)
 
 ### Cookie file layout
@@ -120,8 +134,9 @@ cookies/
 ```
 
 Facebook scraper cookie path resolution order:
-1. `SOURCE_COOKIE_FILE` (if set)
-2. `/app/cookies/facebook/fb_cookies.json` (default)
+1. Per-group `options.cookieFile` (if set)
+2. `SOURCE_COOKIE_FILE` (if set)
+3. `/app/cookies/facebook/fb_cookies.json` (default)
 
 Commit only redacted example files (`*.example.json`); keep live cookie files local and ignored.
 
@@ -138,7 +153,8 @@ The scraper persists normalized fields (author/content/link/media/published date
 1. Create scraper class (usually by copying `src/sites/ExampleScraper.ts`).
 2. Implement all `SiteScraper` lifecycle methods.
 3. Register it in `src/sites/index.ts` with `globalRegistry.register("my-site", MySiteScraper)`.
-4. Add a `SCRAPE_GROUPS` entry using `siteId: "my-site"`.
+4. Add validation/adapter support in `src/sourceConfig.ts` for any scheduled
+   source options, then add a `SCRAPE_GROUPS` entry using `siteId: "my-site"`.
 5. Run locally and verify DB writes.
 
 ## Local Development Commands

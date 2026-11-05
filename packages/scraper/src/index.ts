@@ -13,17 +13,7 @@ import type { GroupConfig } from "./types.js";
 import { SchedulerDiagnostics, startRuntimeDiagnostics } from "./schedulerDiagnostics.js";
 import { scheduleWithRecovery } from "./recoverableSchedule.js";
 import { checkDatabase, getDatabaseHealth } from "./database.js";
-import { isFacebookGroupUrl } from "./facebookGroups.js";
-
-interface GroupConfigInput {
-  groupId?: string;
-  sourceId?: string;
-  id?: string;
-  siteId?: string;
-  schedule?: string;
-  name: string;
-  url: string;
-}
+import { buildSourceConfig, inferSiteIdFromUrl, parseGroups } from "./sourceConfig.js";
 
 class TimeoutError extends Error {
   constructor(message: string) {
@@ -72,26 +62,6 @@ interface PruneState {
   lastError: string | null;
 }
 
-function inferSiteIdFromUrl(url: string): string {
-  if (isFacebookGroupUrl(url)) return "facebook";
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    const normalized = host.replace(/^www\./, "").replace(/^m\./, "");
-    const inferred = normalized.split(".")[0] || "unknown";
-    return inferred === "facebook" ? "unknown" : inferred;
-  } catch {
-    return "unknown";
-  }
-}
-
-function parseGroupId(input: GroupConfigInput): string {
-  const id = input.groupId || input.sourceId || input.id;
-  if (!id) {
-    throw new Error(`Missing group identifier for config "${input.name}"`);
-  }
-  return id;
-}
-
 function loadGroups(): GroupConfig[] {
   const raw = process.env.SCRAPE_GROUPS;
   if (!raw) {
@@ -99,14 +69,7 @@ function loadGroups(): GroupConfig[] {
     process.exit(1);
   }
 
-  const parsed = JSON.parse(raw) as GroupConfigInput[];
-  return parsed.map((group) => ({
-    groupId: parseGroupId(group),
-    siteId: group.siteId || inferSiteIdFromUrl(group.url),
-    name: group.name,
-    url: group.url,
-    schedule: group.schedule,
-  }));
+  return parseGroups(raw);
 }
 
 function getGroupSchedule(group: GroupConfig, defaultSchedule: string): string {
@@ -232,28 +195,10 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
     controller.signal.throwIfAborted();
     const stopAtSourceId = await getLatestScrapedSourcePostId(groupId);
     controller.signal.throwIfAborted();
-    const facebookBoundaryFallbackLimit = parsePositiveInteger(process.env.FACEBOOK_BOUNDARY_FALLBACK_LIMIT, 50);
-
     failure.reason = "scrape_failure";
     await engine.init(controller.signal);
     controller.signal.throwIfAborted();
-    engine.registerSite({
-      siteId,
-      name: config.name,
-      enabled: true,
-      options: {
-        groupIds: [config.groupId],
-        ...(siteId === "example-site" ? { sourceUrl: config.url } : {}),
-        cookieFile: process.env.SOURCE_COOKIE_FILE || undefined,
-        stopAtSourceId: stopAtSourceId ?? undefined,
-        ...(siteId === "facebook"
-          ? {
-            boundaryFallbackLimit: facebookBoundaryFallbackLimit,
-            maxCollectedPosts: facebookBoundaryFallbackLimit,
-          }
-          : {}),
-      },
-    });
+    engine.registerSite(buildSourceConfig(config, stopAtSourceId));
 
     console.log(`  Running ${siteId} scraper...`);
     const result = await engine.scrapeOne(siteId, controller.signal);

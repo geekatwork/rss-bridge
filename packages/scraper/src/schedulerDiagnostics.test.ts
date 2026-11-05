@@ -48,8 +48,21 @@ describe("scheduler diagnostics", () => {
       expectedCompletionBy: "2026-11-02T06:01:15.000Z",
       stale: false,
     });
+
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('"durationMs":123'));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('"startDelayMs":5000'));
+  });
+
+  it("correlates each execution without duplicating scheduler lifecycle events", () => {
+    diagnostics.register("scrape:1", "* * * * *", nextRun, 10_000);
+    diagnostics.started("scrape:1", null, "initial", "run-1");
+    diagnostics.completed("scrape:1", true, 10);
+    const events = vi.mocked(console.log).mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(events.map((event) => [event.event, event.runId])).toEqual([
+      ["job_started", "run-1"], ["job_finished", "run-1"],
+    ]);
+    diagnostics.started("scrape:1", null, "recovery", "run-2");
+    expect(diagnostics.snapshot()[0]).toMatchObject({ runId: "run-2", recoveredRuns: 1 });
   });
 
   it("keeps execution correlation when a later cron occurrence arrives during jitter", () => {

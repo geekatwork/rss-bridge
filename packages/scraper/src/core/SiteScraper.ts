@@ -108,6 +108,7 @@ export abstract class SiteScraper {
    * Caller handles retries and error reporting.
    */
   async run(context: ScraperContext): Promise<ScrapeResult> {
+    context = { ...context, logger: context.logger.child({ siteId: this.config.siteId, jobId: context.jobId }) };
     this.context = context;
     const startedAt = new Date();
     const errors: string[] = [];
@@ -139,18 +140,19 @@ export abstract class SiteScraper {
 
       // Pagination loop
       while (pageCount < maxPages) {
+        const pageContext = { ...context, logger: context.logger.child({ page: pageCount + 1 }) };
         context.signal?.throwIfAborted();
         let step = "fetch";
         let pageFailed = false;
         let emptyPage = false;
         try {
           context.logger.debug({ site: this.config.siteId, page: pageCount + 1 }, "Fetching listing");
-          await this.fetchListing(context);
+          await this.fetchListing(pageContext);
           context.signal?.throwIfAborted();
 
           step = "extract";
           context.logger.debug({ site: this.config.siteId, page: pageCount + 1 }, "Extracting items");
-          const items = await this.extractItems(context);
+          const items = await this.extractItems(pageContext);
           context.signal?.throwIfAborted();
           context.logger.info({ site: this.config.siteId, page: pageCount + 1, count: items.length }, "Extracted items");
           emptyPage = items.length === 0;
@@ -160,7 +162,7 @@ export abstract class SiteScraper {
             context.logger.debug({ site: this.config.siteId }, "Resolving links");
             const unresolvedItems = items.filter((item) => !item.link);
             try {
-              await this.resolveLinks(context, items);
+              await this.resolveLinks(pageContext, items);
               context.signal?.throwIfAborted();
             } finally {
               linksResolved += unresolvedItems.filter((item) => item.link).length;
@@ -199,7 +201,7 @@ export abstract class SiteScraper {
 
         try {
           step = "hasMorePages";
-          const hasMorePages = await this.hasMorePages(context);
+          const hasMorePages = await this.hasMorePages(pageContext);
           context.signal?.throwIfAborted();
           if (!hasMorePages) {
             context.logger.info({ site: this.config.siteId }, "No more pages or max items reached");
@@ -207,7 +209,7 @@ export abstract class SiteScraper {
           }
 
           step = "nextPage";
-          await this.nextPage(context);
+          await this.nextPage(pageContext);
           context.signal?.throwIfAborted();
           pageCount++;
         } catch (error) {

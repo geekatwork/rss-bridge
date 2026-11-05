@@ -48,6 +48,11 @@ Design goals:
     - `nextPage()`
     - `shutdown()`
     - `run()`
+  - Stops pagination after three recoverable failed pages or three successful
+    empty pages; nonempty success resets both counters, failures reset the empty
+    counter. Empty termination is healthy, but recorded failures remain errors.
+  - Validates a positive integer page limit (default 10) before initialization;
+    always attempts shutdown. See [page failure handling](src/sites/README.md#page-failure-handling).
 - `src/core/ScrapeRegistry.ts`
   - Maps `siteId` -> scraper class
 - `src/db.ts`

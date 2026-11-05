@@ -97,6 +97,20 @@ The runner stops after three consecutive failed pages, resets that count after a
 successful page, and continues to honor page/item stopping limits. Initialization
 failures remain fatal, and shutdown is attempted once for every run.
 
+Three consecutive successful empty pages also stop pagination, even if the
+plugin reports more pages. A nonempty page or a failed page resets the empty
+counter. This is an informational termination, not a scrape error: legitimate
+empty incremental runs remain healthy, while any earlier errors remain recorded.
+Plugins that expect valid content beyond three consecutive blank pages must
+handle that source-specific gap inside their own listing implementation.
+
+`context.config.maxPages` defaults to 10 when omitted and must be a positive safe
+integer when supplied. Invalid values produce a logged scrape error before
+initialization; cleanup is still attempted. The runner does not call
+`hasMorePages()` or `nextPage()` after any stopping threshold. Page limits bound
+repeated nonempty results too; they do not deduplicate items or interrupt a
+hung plugin method (the scheduled group deadline handles cancellation).
+
 ## Config Template
 
 ```json

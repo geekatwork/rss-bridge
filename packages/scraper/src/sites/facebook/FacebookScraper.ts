@@ -195,15 +195,18 @@ export class FacebookScraper extends SiteScraper {
   private apiItems: NormalizedItem[] = [];
 
   private buildGroupUrl(groupId: string): string {
-    return `https://www.facebook.com/groups/${groupId}/?sorting_setting=CHRONOLOGICAL`;
+    const configured = this.config.options.sourceUrl as string | undefined;
+    const url = new URL(configured || `https://www.facebook.com/groups/${groupId}/`);
+    url.searchParams.set("sorting_setting", "CHRONOLOGICAL");
+    return url.toString();
   }
 
   private isExpectedGroupPage(url: string, groupId: string): boolean {
     try {
       const parsed = new URL(url);
       return (
-        /^(www\.|m\.)?facebook\.com$/i.test(parsed.hostname) &&
-        new RegExp(`^/groups/${groupId}(?:/|$)`).test(parsed.pathname)
+        /^(www\.|m\.|mbasic\.)?facebook\.com$/i.test(parsed.hostname) &&
+        parsed.pathname.split("/")[2] === groupId
       );
     } catch {
       return false;

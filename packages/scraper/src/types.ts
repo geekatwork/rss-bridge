@@ -15,4 +15,20 @@ export interface GroupConfig {
   name: string;
   url: string;
   schedule?: string;
+  options?: SourceOptions;
+}
+
+export interface SourceOptions {
+  cookieFile?: string;
+  maxItems?: number;
+  maxPages?: number;
+  limit?: number;
+  sort?: "hot" | "new" | "top";
+  timeFilter?: "day" | "week" | "month" | "year" | "all";
+  boundaryFallbackLimit?: number;
+  maxCollectedPosts?: number;
+  scrollAttempts?: number;
+  boundaryMinimumMarkerIndex?: number;
+  debugHrefs?: boolean;
+  unresolvedDumpFile?: string;
 }

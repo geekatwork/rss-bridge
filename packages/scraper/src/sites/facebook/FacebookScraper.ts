@@ -1,18 +1,19 @@
 // --- IMPORTS ---
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname } from "path";
-import type { Page } from "puppeteer";
+import type { ElementHandle, Page, Target } from "puppeteer";
 import { SiteScraper, type NormalizedItem, type ScraperContext, type SiteConfig } from "../../core/index.js";
 import { parseTimestamp, sleep, textToParagraphHtml } from "../../core/utils.js";
 import { fetchPostsViaApi } from "./graphApi.js";
 import {
   extractFirstImageUrl,
-  extractFacebookLinkFromCandidate,
-  extractFacebookLinkFromHtmlBlob,
+  extractFacebookListingLink,
   extractFacebookPageFallbackFromCandidates,
+  normalizeFacebookClickDestination,
 } from "./linkExtraction.js";
 import { extractFacebookAlbumLinkFromImageUrls, extractFacebookPostLinkFromCandidates } from "./linkExtraction.js";
 import type { NormalizedPost } from "../../types.js";
+import { findFacebookPost, type FacebookPostIdentity } from "./postIdentity.js";
 
 // --- MAIN EXPORTS ---
 export function cleanFacebookPostText(raw: string, author?: string): string {
@@ -193,6 +194,7 @@ export class FacebookScraper extends SiteScraper {
   private morePages = false;
   private useApi = false;
   private apiItems: NormalizedItem[] = [];
+  private clickSequence = 0;
 
   private buildGroupUrl(groupId: string): string {
     const configured = this.config.options.sourceUrl as string | undefined;
@@ -233,54 +235,183 @@ export class FacebookScraper extends SiteScraper {
     return envConfigured && envConfigured.trim() ? envConfigured.trim() : null;
   }
 
-  private async dumpUnresolvedFixture(item: NormalizedItem, postIndex: number, groupUrl: string): Promise<void> {
-    if (!this.page) return;
+  private getPostIdentity(item: NormalizedItem): FacebookPostIdentity | null {
+    const identity = item.rawPayload?.identity;
+    if (!identity || typeof identity !== "object" || !("text" in identity)
+      || typeof identity.text !== "string" || !("mediaUrls" in identity)
+      || !Array.isArray(identity.mediaUrls) || !identity.mediaUrls.every((url) => typeof url === "string")) {
+      return null;
+    }
+    return { text: identity.text, mediaUrls: identity.mediaUrls };
+  }
+
+  private async getPostHandle(item: NormalizedItem): Promise<ElementHandle<HTMLElement> | null> {
+    if (!this.page) throw new Error("Page not initialized");
+    const identity = this.getPostIdentity(item);
+    if (!identity) return null;
+    const handle = await this.page.evaluateHandle(findFacebookPost, identity);
+    const element = handle.asElement();
+    if (element) return handle as ElementHandle<HTMLElement>;
+    await handle.dispose();
+    return null;
+  }
+
+  private async clickVerifiedTarget(item: NormalizedItem, target: ElementHandle<HTMLElement>): Promise<boolean> {
+    const post = await this.getPostHandle(item);
+    const identity = this.getPostIdentity(item);
+    if (!post || !identity) {
+      await post?.dispose();
+      return false;
+    }
+    const page = this.page;
+    if (!page) {
+      await post.dispose();
+      throw new Error("Page not initialized");
+    }
+    const binding = `rssBridgeFacebookClick${++this.clickSequence}`;
+    let finish = (_allowed: boolean) => {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = new Promise<boolean>((resolve, reject) => {
+      finish = resolve;
+      timer = setTimeout(() => reject(new Error("Native Facebook click produced no verified click event")), 5000);
+    });
+    try {
+      // Report the guarded event before a successful click destroys its document.
+      await page.exposeFunction(binding, finish);
+      await post.evaluate((el, clickTarget, expected, name) => {
+        const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
+        let blocked = false;
+        const images = Array.from(el.querySelectorAll("img")).map((img) => img.getAttribute("src"));
+        const check = (event: Event) => {
+          const currentImages = Array.from(el.querySelectorAll("img")).map((img) => img.getAttribute("src"));
+          if (normalize(el.textContent || "") !== normalize(expected.text)
+            || images.some((src) => !currentImages.includes(src))
+            || !el.contains(clickTarget) || !event.composedPath().includes(clickTarget)) {
+            blocked = true;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+          if (blocked || event.type === "click") {
+            const notify: unknown = Reflect.get(window, name);
+            if (typeof notify === "function") void notify(!blocked);
+          }
+        };
+        for (const name of ["pointerdown", "mousedown", "click"]) document.addEventListener(name, check, true);
+        Reflect.set(window, `${name}Cleanup`, () => {
+          for (const event of ["pointerdown", "mousedown", "click"]) document.removeEventListener(event, check, true);
+        });
+      }, target, identity, binding);
+      const [, allowed] = await Promise.all([target.click(), outcome]);
+      return allowed;
+    } finally {
+      clearTimeout(timer);
+      try {
+        const cleanupHandle = await page.waitForFunction((name) => {
+          const cleanup: unknown = Reflect.get(window, `${name}Cleanup`);
+          if (typeof cleanup === "function") cleanup();
+          Reflect.deleteProperty(window, `${name}Cleanup`);
+          return true;
+        }, { timeout: 5000 }, binding);
+        await cleanupHandle.dispose();
+      } finally {
+        try {
+          await page.removeExposedFunction(binding);
+        } finally {
+          await post.dispose();
+        }
+      }
+    }
+  }
+
+  private async readPostDom(item: NormalizedItem) {
+    const post = await this.getPostHandle(item);
+    if (!post) return null;
+    const identity = this.getPostIdentity(item);
+    try {
+      return await post.evaluate((el, expected) => {
+        const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+        if (!expected || normalize(el.textContent || "") !== normalize(expected.text)) return null;
+        const imageKey = (value: string) => {
+          const url = new URL(value);
+          return `${url.origin}${url.pathname}`;
+        };
+        const images = new Set(Array.from(el.querySelectorAll("img[src]"))
+          .map((img) => imageKey(img.getAttribute("src") || "")));
+        if (!expected.mediaUrls.every((url) => images.has(imageKey(url)))) return null;
+        const candidateUrls = Array.from(el.querySelectorAll("a"))
+          .flatMap((a) => [a.getAttribute("href"), a.href, a.getAttribute("data-lynx-uri"), a.getAttribute("ajaxify")])
+          .filter((value): value is string => !!value);
+        const clickImages = Array.from(el.querySelectorAll("img[src*='scontent'], img[src*='fbcdn']"))
+          .filter((img) => !/rsrc\.php|emoji/.test(img.getAttribute("src") || ""))
+          .map((img) => ({ src: img.getAttribute("src") || "", rect: img.getBoundingClientRect() }))
+          .filter(({ rect }) => rect.width > 80)
+          .sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height)
+          .map(({ src }) => src);
+        return {
+          candidateUrls, clickImages: Array.from(new Set(clickImages)).slice(0, 2),
+          domText: (el.textContent || "").trim(), domHtml: el.innerHTML,
+          postIndex: Array.from(el.parentElement?.children || []).indexOf(el),
+        };
+      }, identity);
+    } finally {
+      await post.dispose();
+    }
+  }
+
+  private async getClickTarget(item: NormalizedItem, imageSrc: string): Promise<ElementHandle<HTMLElement> | null> {
+    const post = await this.getPostHandle(item);
+    if (!post) return null;
+    try {
+      const handle = await post.evaluateHandle((el, src) => {
+        const image = Array.from(el.querySelectorAll("img")).find((img) => img.getAttribute("src") === src);
+        if (!image) return null;
+        let target: HTMLElement = image;
+        for (let parent = image.parentElement; parent && parent !== el; parent = parent.parentElement) {
+          if (parent.hasAttribute("data-action-id")) {
+            target = parent;
+            break;
+          }
+        }
+        return target;
+      }, imageSrc);
+      if (!handle.asElement()) {
+        await handle.dispose();
+        return null;
+      }
+      const target = handle as ElementHandle<HTMLElement>;
+      try {
+        await target.scrollIntoView();
+        const currentPost = await this.getPostHandle(item);
+        if (currentPost) {
+          try {
+            const valid = await currentPost.evaluate((el, expected, clickTarget) =>
+              el === expected && el.contains(clickTarget), post, target);
+            if (valid) return target;
+          } finally {
+            await currentPost.dispose();
+          }
+        }
+        await target.dispose();
+        return null;
+      } catch (error) {
+        await target.dispose();
+        throw error;
+      }
+    } finally {
+      await post.dispose();
+    }
+  }
+
+  private async dumpUnresolvedFixture(item: NormalizedItem, groupUrl: string): Promise<void> {
     const dumpFile = this.getUnresolvedDumpFile();
     if (!dumpFile) return;
-
-    const dumpPayload = await this.page.evaluate((idx: number) => {
-      const screenRoot = document.getElementById("screen-root");
-      const mainDiv = screenRoot?.children[0];
-      if (!mainDiv) return null;
-      let scrollDiv: Element | null = null;
-      for (let i = 0; i < mainDiv.children.length; i++) {
-        const child = mainDiv.children[i];
-        if ((child.textContent || "").trim().length > 200) {
-          scrollDiv = child;
-          break;
-        }
-      }
-      if (!scrollDiv || !scrollDiv.children[idx]) return null;
-      const postEl = scrollDiv.children[idx] as HTMLElement;
-      const candidates: string[] = [];
-      const addCandidate = (value: string | null) => {
-        if (!value) return;
-        const trimmed = value.trim();
-        if (!trimmed) return;
-        candidates.push(trimmed);
-      };
-      const anchors = Array.from(postEl.querySelectorAll("a"));
-      for (const anchor of anchors) {
-        addCandidate(anchor.getAttribute("href"));
-        if (anchor instanceof HTMLAnchorElement) {
-          addCandidate(anchor.href || null);
-        }
-        addCandidate(anchor.getAttribute("data-lynx-uri"));
-        addCandidate(anchor.getAttribute("ajaxify"));
-      }
-      return {
-        candidateUrls: Array.from(new Set(candidates)),
-        domText: (postEl.textContent || "").trim(),
-        domHtml: postEl.innerHTML || "",
-      };
-    }, postIndex);
-
+    const dumpPayload = await this.readPostDom(item);
     if (!dumpPayload) return;
 
     appendJsonLine(dumpFile, {
       timestamp: new Date().toISOString(),
       sourcePostId: item.sourceId,
-      postIndex,
+      postIndex: dumpPayload.postIndex,
       groupUrl,
       contentText: item.contentText,
       contentHtml: item.contentHtml,
@@ -294,39 +425,16 @@ export class FacebookScraper extends SiteScraper {
   private async resolveLinkFromDomFallback(
     context: ScraperContext,
     item: NormalizedItem,
-    postIndex: number,
     groupUrl: string,
   ): Promise<boolean> {
     if (!this.page) return false;
 
-    const candidateHrefs = await this.page.evaluate((idx: number) => {
-      const screenRoot = document.getElementById("screen-root");
-      const mainDiv = screenRoot?.children[0];
-      if (!mainDiv) return [];
-      let scrollDiv: Element | null = null;
-      for (let i = 0; i < mainDiv.children.length; i++) {
-        const child = mainDiv.children[i];
-        if ((child.textContent || "").trim().length > 200) {
-          scrollDiv = child;
-          break;
-        }
-      }
-      if (!scrollDiv || !scrollDiv.children[idx]) return [];
-      const postEl = scrollDiv.children[idx];
-      if (!postEl) return [];
-
-      const hrefs: string[] = [];
-      const anchors = Array.from(postEl.querySelectorAll("a[href]"));
-      for (const anchor of anchors) {
-        const href = anchor.getAttribute("href");
-        if (href) hrefs.push(href);
-        const lynx = anchor.getAttribute("data-lynx-uri");
-        if (lynx) hrefs.push(lynx);
-        const ajaxify = anchor.getAttribute("ajaxify");
-        if (ajaxify) hrefs.push(ajaxify);
-      }
-      return hrefs;
-    }, postIndex);
+    const snapshot = await this.readPostDom(item);
+    const captured = item.rawPayload?.candidateUrls;
+    const candidateHrefs = [
+      ...(snapshot?.candidateUrls || []),
+      ...(Array.isArray(captured) ? captured.filter((url): url is string => typeof url === "string") : []),
+    ];
 
     const { link: postLink, multipleInstagramLinks } = extractFacebookPostLinkFromCandidates(candidateHrefs);
     if (multipleInstagramLinks) {
@@ -359,7 +467,7 @@ export class FacebookScraper extends SiteScraper {
       return true;
     }
 
-    await this.dumpUnresolvedFixture(item, postIndex, groupUrl);
+    await this.dumpUnresolvedFixture(item, groupUrl);
     return false;
   }
 
@@ -726,21 +834,7 @@ export class FacebookScraper extends SiteScraper {
       return evaluatedPosts.map((post) => {
         let link = post.link;
 
-        if (!link) {
-          for (const raw of post.urlCandidates) {
-            const extracted = extractFacebookLinkFromCandidate(raw);
-            if (!extracted.link) continue;
-            link = extracted.link;
-            break;
-          }
-        }
-
-        if (!link && post.htmlBlob) {
-          const extracted = extractFacebookLinkFromHtmlBlob(post.htmlBlob);
-          if (extracted.link) {
-            link = extracted.link;
-          }
-        }
+        if (!link) link = extractFacebookListingLink(post.urlCandidates, post.htmlBlob);
 
         return {
           index: post.index,
@@ -752,6 +846,7 @@ export class FacebookScraper extends SiteScraper {
           images: post.images,
           time: post.time,
           needsLinkResolve: post.needsLinkResolve,
+          candidateUrls: post.urlCandidates,
         };
       });
     };
@@ -766,6 +861,7 @@ export class FacebookScraper extends SiteScraper {
       images: string[];
       time: string | null;
       needsLinkResolve: boolean;
+      candidateUrls: string[];
     }>();
 
     const mergeVisiblePosts = (visiblePosts: Awaited<ReturnType<typeof collectVisiblePosts>>) => {
@@ -793,6 +889,7 @@ export class FacebookScraper extends SiteScraper {
           existing.images = post.images;
         }
         existing.needsLinkResolve = existing.needsLinkResolve || post.needsLinkResolve;
+        existing.candidateUrls = Array.from(new Set([...existing.candidateUrls, ...post.candidateUrls]));
       }
     };
 
@@ -887,7 +984,11 @@ export class FacebookScraper extends SiteScraper {
         mediaUrls: post.images,
         publishedAt: postedAt,
         publishedAtIsSource: sourceDate !== null,
-        rawPayload: { fbId: post.id, needsLinkResolve: post.needsLinkResolve, index: post.index },
+        rawPayload: {
+          fbId: post.id, needsLinkResolve: post.needsLinkResolve,
+          identity: { text: post.text, mediaUrls: post.images },
+          candidateUrls: post.candidateUrls,
+        },
       };
     });
   }
@@ -896,14 +997,9 @@ export class FacebookScraper extends SiteScraper {
     if (this.useApi) return;
     if (!this.page) throw new Error("Page not initialized");
 
-    // Mobile Facebook often hides outbound URLs behind clickable media.
-    // Resolve links across the same bounded set of posts collected from the feed,
-    // not just the first 25 unresolved items, or later posts will never be tried.
-    // Only attempt items flagged needsLinkResolve (have a content image) to avoid
-    // clicking non-post header elements.
     const resolveLimit = (this.config.options.maxCollectedPosts as number) || 60;
     const itemsNeedingLinks = items
-      .filter((i) => !i.link && i.rawPayload?.needsLinkResolve)
+      .filter((i) => !i.link)
       .slice(0, resolveLimit);
     context.logger.info({ count: itemsNeedingLinks.length }, "Resolving links");
     if (itemsNeedingLinks.length === 0) return;
@@ -931,366 +1027,136 @@ export class FacebookScraper extends SiteScraper {
     await sleep(3000);
 
     for (const item of itemsNeedingLinks) {
+      if (!this.isExpectedGroupPage(this.page.url(), this.groupId || "")) {
+        throw new Error("Refusing to resolve links outside the configured Facebook group");
+      }
       try {
-        const postIndex = item.rawPayload?.index as number;
-        if (postIndex === undefined || postIndex === null) continue;
-
-        // Scroll post into view first (unconditionally), then get image click position.
-        // Must scroll BEFORE checking rect dimensions — after 30+ feed scrolls, early posts
-        // are far above the viewport and their images report rect.width=0 until scrolled in.
-        const scrolled = await this.page.evaluate((idx: number) => {
-          const screenRoot = document.getElementById("screen-root");
-          if (!screenRoot) return { ok: false, reason: "no screen-root" };
-          const mainDiv = screenRoot.children[0];
-          if (!mainDiv) return { ok: false, reason: "no mainDiv" };
-          let scrollDiv: Element | null = null;
-          for (let i = 0; i < mainDiv.children.length; i++) {
-            const child = mainDiv.children[i];
-            if ((child.textContent || "").trim().length > 200) {
-              scrollDiv = child;
-              break;
-            }
-          }
-          if (!scrollDiv) return { ok: false, reason: "no scrollDiv" };
-          const postEl = scrollDiv.children[idx] as HTMLElement | undefined;
-          if (!postEl) return { ok: false, reason: `no element at idx ${idx}`, total: scrollDiv.children.length };
-          // Scroll the LARGEST content image into view so getBoundingClientRect returns non-zero dimensions
-          const allImgs = postEl.querySelectorAll("img[src*='scontent'], img[src*='fbcdn']");
-          let largestImg: HTMLElement | null = null;
-          let largestWidth = 0;
-          for (const img of Array.from(allImgs)) {
-            const src = img.getAttribute("src") || "";
-            if (src.includes("rsrc.php") || src.includes("emoji")) continue;
-            const w = (img as HTMLElement).offsetWidth || (img as HTMLElement).getBoundingClientRect().width;
-            if (w > largestWidth) {
-              largestWidth = w;
-              largestImg = img as HTMLElement;
-            }
-          }
-          if (largestImg) {
-            largestImg.scrollIntoView({ block: "center" });
-            return { ok: true, scrollDivLen: scrollDiv.children.length, scrollDivScrollTop: (scrollDiv as HTMLElement).scrollTop };
-          }
-          // No content image — scroll the post element itself into view
-          postEl.scrollIntoView({ block: "center" });
-          return { ok: true, noImg: true, scrollDivLen: scrollDiv.children.length };
-        }, postIndex);
-
-        context.logger.info({ id: item.sourceId, postIndex, scrolled }, "resolveLinks: scrollIntoView result");
-
-        if (!scrolled || !(scrolled as { ok?: boolean }).ok) continue;
-
-        // Wait for image to render now that it's in the viewport
+        const post = await this.getPostHandle(item);
+        if (!post) {
+          context.logger.warn({ id: item.sourceId }, "Post identity absent or ambiguous; skipping DOM resolution");
+          await this.resolveLinkFromDomFallback(context, item, groupUrl);
+          continue;
+        }
+        try {
+          await post.scrollIntoView();
+        } finally {
+          await post.dispose();
+        }
         await sleep(1200);
 
-        // Get click position after element is in view
-
-          // Try href-based extraction first — album/carousel posts have fbid in <a href>
-          // even though clicking the images navigates to home (no click needed)
-          const hrefLink = await this.page.evaluate((idx: number) => {
-            const screenRoot = document.getElementById("screen-root");
-            if (!screenRoot) return null;
-            const mainDiv = screenRoot.children[0];
-            if (!mainDiv) return null;
-            let scrollDiv: Element | null = null;
-            for (let i = 0; i < mainDiv.children.length; i++) {
-              const child = mainDiv.children[i];
-              if ((child.textContent || "").trim().length > 200) {
-                scrollDiv = child;
-                break;
-              }
-            }
-            if (!scrollDiv) return null;
-            const postEl = scrollDiv.children[idx];
-            if (!postEl) return null;
-            const anchors = Array.from(postEl.querySelectorAll("a[href]"));
-            for (const anchor of anchors) {
-              const href = anchor.getAttribute("href") || "";
-              if (/fbid=\d+|photo\.php/.test(href)) {
-                try {
-                  return new URL(href, "https://www.facebook.com").href;
-                } catch {
-                  return href;
-                }
-              }
-            }
-            return null;
-          }, postIndex);
-
-          // If no href with fbid found, try data-action-id elements which may contain anchors with fbid
-          let hrefLinkAlt = null;
-          if (!hrefLink) {
-            hrefLinkAlt = await this.page.evaluate((idx: number) => {
-              const screenRoot = document.getElementById("screen-root");
-              const mainDiv = screenRoot?.children[0];
-              if (!mainDiv) return null;
-              let scrollDiv = null;
-              for (let i = 0; i < mainDiv.children.length; i++) {
-                const child = mainDiv.children[i];
-                if ((child.textContent || "").trim().length > 200) {
-                  scrollDiv = child;
-                  break;
-                }
-              }
-              if (!scrollDiv || !scrollDiv.children[idx]) return null;
-              const postEl = scrollDiv.children[idx] as Element;
-              // For album posts: each image tile is in a <div data-action-id> ancestor
-              // Check if that action el or its children have an anchor with fbid
-              const actionEls = Array.from(postEl.querySelectorAll("[data-action-id]"));
-              for (const actionEl of actionEls) {
-                const childAnchors = Array.from(actionEl.querySelectorAll("a[href]"));
-                for (const anchor of childAnchors) {
-                  const href = anchor.getAttribute("href") || "";
-                  if (/fbid=\d+|photo\.php/.test(href)) {
-                    try {
-                      return new URL(href, "https://www.facebook.com").href;
-                    } catch {
-                      return href;
-                    }
-                  }
-                }
-              }
-              return null;
-            }, postIndex);
-          }
-
-          const resolvedHref = hrefLink || hrefLinkAlt;
-          if (resolvedHref) {
-            item.link = resolvedHref;
-            context.logger.info({ id: item.sourceId, link: resolvedHref, method: hrefLink ? "direct" : "actionEl" }, "Resolved photo link from href");
-            continue;
-          }
-
-            // Debug probe: log all hrefs found in this post element (only for items that end up
-            // going to home during click-resolution, i.e., album posts). Remove once investigated.
-            if (this.config.options?.debugHrefs) {
-              const allHrefs = await this.page.evaluate((idx: number) => {
-                const screenRoot = document.getElementById("screen-root");
-                const mainDiv = screenRoot?.children[0];
-                if (!mainDiv) return [];
-                let scrollDiv: Element | null = null;
-                for (let i = 0; i < mainDiv.children.length; i++) {
-                  const child = mainDiv.children[i];
-                  if ((child.textContent || "").trim().length > 200) { scrollDiv = child; break; }
-                }
-                if (!scrollDiv) return [];
-                const postEl = scrollDiv.children[idx];
-                if (!postEl) return [];
-                return Array.from(postEl.querySelectorAll("a[href]")).map(a => a.getAttribute("href") || "").filter(Boolean);
-              }, postIndex);
-              context.logger.info({ id: item.sourceId, postIndex, allHrefs }, "resolveLinks: all hrefs in post");
-            }
-            // Get click position after element is in view
-        const clickPos = await this.page.evaluate((idx: number) => {
-          const screenRoot = document.getElementById("screen-root");
-          if (!screenRoot) return null;
-          const mainDiv = screenRoot.children[0];
-          if (!mainDiv) return null;
-          let scrollDiv: Element | null = null;
-          for (let i = 0; i < mainDiv.children.length; i++) {
-            const child = mainDiv.children[i];
-            if ((child.textContent || "").trim().length > 200) {
-              scrollDiv = child;
-              break;
-            }
-          }
-          if (!scrollDiv) return null;
-          const postEl = scrollDiv.children[idx];
-          if (!postEl) return null;
-          const allImgs = postEl.querySelectorAll("img[src*='scontent'], img[src*='fbcdn']");
-          const imgWidths: number[] = [];
-          const candidates: Array<{ x: number; y: number; w: number; h: number; actionId: string | null }> = [];
-          for (const img of Array.from(allImgs)) {
-            const src = img.getAttribute("src") || "";
-            if (src.includes("rsrc.php") || src.includes("emoji")) continue;
-            const rect = img.getBoundingClientRect();
-            imgWidths.push(rect.width);
-            if (rect.width > 80) {
-              let actionEl: HTMLElement | null = null;
-              let parent = img.parentElement;
-              while (parent && parent !== postEl) {
-                if (parent.getAttribute("data-action-id")) {
-                  actionEl = parent as HTMLElement;
-                  break;
-                }
-                parent = parent.parentElement;
-              }
-              const targetRect = actionEl?.getBoundingClientRect() ?? rect;
-              candidates.push({
-                x: targetRect.x + targetRect.width / 2,
-                y: targetRect.y + targetRect.height / 2,
-                w: targetRect.width,
-                h: targetRect.height,
-                actionId: actionEl?.getAttribute("data-action-id") ?? null,
-              });
-            }
-          }
-          candidates.sort((a, b) => {
-            const areaDiff = b.w * b.h - a.w * a.h;
-            if (areaDiff !== 0) return areaDiff;
-            return b.w - a.w;
-          });
-          const uniqueCandidates = candidates.filter((candidate, index, arr) => {
-            return arr.findIndex((other) => Math.abs(other.x - candidate.x) < 2 && Math.abs(other.y - candidate.y) < 2) === index;
-          });
-          if (uniqueCandidates.length > 0) {
-            return {
-              x: uniqueCandidates[0].x,
-              y: uniqueCandidates[0].y,
-              w: uniqueCandidates[0].w,
-              imgWidths,
-              candidates: uniqueCandidates.slice(0, 2), // max 2 candidates — album posts won't resolve via clicking anyway
-            };
-          }
-          return { noMatch: true, imgWidths };
-        }, postIndex);
-
-        if (!clickPos || (clickPos as { noMatch?: boolean }).noMatch) {
-          context.logger.info({ id: item.sourceId, postIndex, clickPos }, "resolveLinks: no clickable image found");
-          await this.resolveLinkFromDomFallback(context, item, postIndex, groupUrl);
+        const snapshot = await this.readPostDom(item);
+        if (!snapshot) {
+          context.logger.warn({ id: item.sourceId }, "Post identity changed after scrolling; skipping DOM resolution");
+          await this.resolveLinkFromDomFallback(context, item, groupUrl);
           continue;
+        }
+        const resolvedHref = extractFacebookPostLinkFromCandidates(snapshot.candidateUrls).link;
+        if (resolvedHref) {
+          item.link = resolvedHref;
+          context.logger.info({ id: item.sourceId, link: resolvedHref }, "Resolved content link from verified post DOM");
+          continue;
+        }
+        if (this.config.options.debugHrefs) {
+          context.logger.info({ id: item.sourceId, allHrefs: snapshot.candidateUrls }, "resolveLinks: verified post hrefs");
         }
 
         let resolved = false;
-        const candidates = ((clickPos as { candidates?: Array<{ x: number; y: number; w: number; actionId?: string | null }> }).candidates || [clickPos as { x: number; y: number; w: number; actionId?: string | null }]);
-        for (const candidate of candidates) {
-          context.logger.info({ id: item.sourceId, postIndex, x: candidate.x, y: candidate.y, w: candidate.w, actionId: candidate.actionId ?? null }, "resolveLinks: clicking image");
+        for (const candidate of item.rawPayload?.needsLinkResolve ? snapshot.clickImages : []) {
+          const target = await this.getClickTarget(item, candidate);
+          if (!target) {
+            context.logger.warn({ id: item.sourceId }, "Post identity changed before click; skipping target");
+            break;
+          }
+          context.logger.info({ id: item.sourceId }, "resolveLinks: clicking verified image");
 
+          let cancelPopupWait = () => {};
           const newTabPromise = new Promise<string | null>((resolve) => {
-            const timeout = setTimeout(() => resolve(null), 6000);
-            context.browser.once("targetcreated", async (target) => {
+            const finish = (url: string | null) => {
               clearTimeout(timeout);
+              context.browser.off("targetcreated", onTarget);
+              resolve(url);
+            };
+            const onTarget = async (target: Target) => {
+              if (target.opener() !== this.page?.target()) return;
+              context.browser.off("targetcreated", onTarget);
               try {
                 const newPage = await target.page();
                 if (newPage) {
-                  await newPage.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 5000 }).catch(() => {});
-                  const tabUrl = newPage.url();
-                  await newPage.close();
-                  resolve(tabUrl === "about:blank" ? null : tabUrl);
+                  let tabUrl: string;
+                  try {
+                    await newPage.waitForFunction(() => location.href !== "about:blank"
+                      && document.readyState !== "loading", { timeout: 5000 });
+                    tabUrl = newPage.url();
+                  } finally {
+                    await newPage.close();
+                  }
+                  finish(tabUrl);
                 } else {
-                  resolve(null);
+                  finish(null);
                 }
-              } catch {
-                resolve(null);
+              } catch (error) {
+                context.logger.warn({ id: item.sourceId, error: String(error) }, "Failed to read clicked popup");
+                finish(null);
               }
-            });
+            };
+            const timeout = setTimeout(() => finish(null), 6000);
+            cancelPopupWait = () => finish(null);
+            context.browser.on("targetcreated", onTarget);
           });
 
-          if (candidate.actionId) {
-            await this.page.evaluate((idx: number, actionId: string) => {
-              const screenRoot = document.getElementById("screen-root");
-              const mainDiv = screenRoot?.children[0];
-              if (!mainDiv) return;
-              let scrollDiv: Element | null = null;
-              for (let i = 0; i < mainDiv.children.length; i++) {
-                const child = mainDiv.children[i];
-                if ((child.textContent || "").trim().length > 200) {
-                  scrollDiv = child;
-                  break;
-                }
-              }
-              if (!scrollDiv) return;
-              const postEl = scrollDiv.children[idx] as HTMLElement | undefined;
-              if (!postEl) return;
-              const actionEl = Array.from(postEl.querySelectorAll("[data-action-id]")).find(
-                (el) => el.getAttribute("data-action-id") === actionId,
-              );
-              if (actionEl instanceof HTMLElement) {
-                actionEl.scrollIntoView({ block: "center" });
-                actionEl.click();
-              }
-            }, postIndex, candidate.actionId);
-          } else {
-            await this.page.mouse.click(candidate.x, candidate.y);
+          try {
+            if (!await this.clickVerifiedTarget(item, target)) {
+              context.logger.warn({ id: item.sourceId }, "Post changed during native click; blocked interaction");
+              cancelPopupWait();
+              break;
+            }
+            await sleep(3000);
+          } catch (error) {
+            cancelPopupWait();
+            throw error;
+          } finally {
+            await target.dispose();
           }
-          await sleep(3000);
 
           const newTabUrl = await newTabPromise;
           if (newTabUrl && newTabUrl !== "about:blank") {
-            if (this.isHomeOrLoginLikePage(newTabUrl)) {
-              context.logger.debug({ id: item.sourceId, link: newTabUrl }, "Ignoring home/login-like redirect link");
-              continue;
+            const destination = normalizeFacebookClickDestination(newTabUrl, groupUrl);
+            if (destination) {
+              item.link = destination;
+              context.logger.info({ id: item.sourceId, link: destination }, "Resolved clicked popup link");
+              resolved = true;
+              break;
             }
-            const igMatch = newTabUrl.match(/instagram\.com\/p\/([A-Za-z0-9_-]+)/);
-            const igReelMatch = newTabUrl.match(/instagram\.com\/reel\/([A-Za-z0-9_-]+)/);
-            if (igMatch) {
-              item.link = `https://www.instagram.com/p/${igMatch[1]}/`;
-              context.logger.debug({ id: item.sourceId, link: item.link }, "Resolved Instagram link");
-            } else if (igReelMatch) {
-              item.link = `https://www.instagram.com/reel/${igReelMatch[1]}/`;
-              context.logger.debug({ id: item.sourceId, link: item.link }, "Resolved Instagram reel");
-            } else {
-              try {
-                const parsed = new URL(newTabUrl);
-                if (parsed.origin && parsed.origin !== "null") {
-                  item.link = `${parsed.origin}${parsed.pathname}`;
-                } else {
-                  item.link = newTabUrl;
-                }
-              } catch {
-                item.link = newTabUrl;
-              }
-              context.logger.info({ id: item.sourceId, link: item.link }, "Resolved external link");
-            }
-            resolved = true;
-            break;
+            context.logger.debug({ id: item.sourceId }, "Ignoring non-content popup destination");
           }
 
           const currentUrl = this.page.url();
           context.logger.info({ id: item.sourceId, currentUrl: currentUrl.substring(0, 80) }, "resolveLinks: page URL after click");
 
-          const groupBasePath = groupUrl.split("?")[0].replace(/\/$/, "");
-          const isGroupSubPage = currentUrl.replace(/\?.*/, "").replace(/\/$/, "").startsWith(groupBasePath);
-          const didNavigate = currentUrl !== groupUrl && !currentUrl.startsWith(groupUrl);
-
-          if (!didNavigate || isGroupSubPage) {
-            if (isGroupSubPage && currentUrl !== groupUrl) {
-              context.logger.info({ id: item.sourceId }, "resolveLinks: group sub-page, going back");
-              await this.page.goBack({ waitUntil: "networkidle2" }).catch(() => {});
-              await sleep(2000);
-            }
-            continue;
-          }
-
-          if (this.isHomeOrLoginLikePage(currentUrl)) {
-            context.logger.info({ id: item.sourceId, link: currentUrl }, "Ignoring home/login-like in-page redirect");
-            await this.page.goBack({ waitUntil: "networkidle2" }).catch(() => {});
-            await sleep(2000);
-            break; // album/carousel posts won't resolve via clicking — don't waste time on further candidates
-          }
-          const fbidMatch = currentUrl.match(/fbid=(\d+)/);
-          const permalinkMatch = currentUrl.match(/permalink\/(\d+)/);
-          if (fbidMatch) {
-            item.link = currentUrl;
-            context.logger.info({ id: item.sourceId, link: currentUrl.substring(0, 80) }, "Resolved photo link");
-          } else if (permalinkMatch) {
-            item.link = currentUrl;
-            context.logger.info({ id: item.sourceId, link: currentUrl.substring(0, 80) }, "Resolved permalink link");
-          } else {
-            item.link = currentUrl;
-            context.logger.info({ id: item.sourceId, link: currentUrl.substring(0, 80) }, "Resolved link");
-          }
+          if (currentUrl === groupUrl) continue;
+          const destination = normalizeFacebookClickDestination(currentUrl, groupUrl);
           await this.page.goBack({ waitUntil: "networkidle2" });
           await sleep(2000);
-          resolved = true;
+          if (!this.isExpectedGroupPage(this.page.url(), this.groupId || "")) {
+            throw new Error("Click resolution did not return to the configured Facebook group");
+          }
+          if (destination) {
+            item.link = destination;
+            context.logger.info({ id: item.sourceId, link: destination }, "Resolved clicked link");
+            resolved = true;
+          } else {
+            context.logger.debug({ id: item.sourceId }, "Ignoring non-content in-page destination");
+          }
           break;
         }
 
         if (!resolved) {
-          await this.resolveLinkFromDomFallback(context, item, postIndex, groupUrl);
+          await this.resolveLinkFromDomFallback(context, item, groupUrl);
           continue;
         }
 
-
-        // Close stray tabs
-        const pages = await context.browser.pages();
-        for (const p of pages) {
-          if (p !== this.page) {
-            await p.close();
-          }
-        }
       } catch (e) {
-        context.logger.warn({ id: item.sourceId, error: String(e) }, "Failed to resolve link");
+        context.logger.warn({ id: item.sourceId, error: e instanceof Error ? e.stack : String(e) }, "Failed to resolve link");
       }
     }
   }

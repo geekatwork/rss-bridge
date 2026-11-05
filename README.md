@@ -4,6 +4,9 @@
 
 A Docker-based monorepo that scrapes source group content and exposes it as RSS feeds for readers like Tiny Tiny RSS.
 
+For vulnerabilities, use the private reporting process in [SECURITY.md](SECURITY.md).
+Public bugs and feature requests use the repository's standardized issue forms.
+
 ## What Runs
 
 This project runs three core services:

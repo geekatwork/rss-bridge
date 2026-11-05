@@ -14,6 +14,7 @@ import { SchedulerDiagnostics, startRuntimeDiagnostics } from "./schedulerDiagno
 import { scheduleWithRecovery } from "./recoverableSchedule.js";
 import { checkDatabase, getDatabaseHealth } from "./database.js";
 import { buildSourceConfig, inferSiteIdFromUrl, parseGroups } from "./sourceConfig.js";
+import { scraperErrorMessage } from "./core/errors.js";
 
 class TimeoutError extends Error {
   constructor(message: string) {
@@ -243,7 +244,7 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
       const error = new TimeoutError(`Timed out after ${groupTimeoutMs}ms: ${config.name} (${config.groupId})`);
       controller.abort(error);
       void engine.shutdown().catch((shutdownError: unknown) => {
-        alert("cleanup_failure", `browser shutdown failed: ${shutdownError instanceof Error ? shutdownError.message : String(shutdownError)}`);
+        alert("cleanup_failure", `browser shutdown failed: ${scraperErrorMessage(shutdownError)}`);
       });
       reject(error);
     }, groupTimeoutMs);
@@ -262,10 +263,10 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
         await runPromise;
       } catch (settleError) {
         console.error(`Timed-out scrape settled with an error for ${config.name} (${config.groupId}):`,
-          settleError instanceof Error ? settleError.message : settleError);
+          scraperErrorMessage(settleError));
       }
     } else {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = scraperErrorMessage(err);
       alert(failure.reason === "scrape_failure" && isAuthFailure(message) ? "auth_failure" : failure.reason,
         `failed during ${failure.reason === "database_failure" ? "database setup/persistence" : "scraping"}: ${message}`);
     }
@@ -275,7 +276,7 @@ async function scrapeGroup(config: GroupConfig): Promise<boolean> {
     try {
       await engine.shutdown();
     } catch (error) {
-      alert("cleanup_failure", `browser shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+      alert("cleanup_failure", `browser shutdown failed: ${scraperErrorMessage(error)}`);
       throw error;
     }
   }
@@ -301,11 +302,11 @@ async function runAllGroups(groups: GroupConfig[], scheduledAt: Date | null, tri
         const success = await scrapeGroup(group);
         diagnostics.completed(jobId, success, performance.now() - started);
       } catch (error) {
-        diagnostics.completed(jobId, false, performance.now() - started, error instanceof Error ? error.message : String(error));
+        diagnostics.completed(jobId, false, performance.now() - started, scraperErrorMessage(error));
         throw error;
       }
     } catch (err) {
-      console.error(`Error scraping group ${group.name}:`, err instanceof Error ? err.message : err);
+      console.error(`Error scraping group ${group.name}:`, scraperErrorMessage(err));
     }
   }
 }
@@ -330,7 +331,7 @@ function drainPendingRecoveries(): void {
   activeRecoveries.add(key);
   recoveryDrainInProgress = true;
   void recover()
-    .catch((error) => console.error(`Missed-run recovery failed for ${key}:`, error instanceof Error ? error.message : error))
+    .catch((error: unknown) => console.error(`Missed-run recovery failed for ${key}:`, scraperErrorMessage(error)))
     .finally(() => {
       activeRecoveries.delete(key);
       recoveryDrainInProgress = false;
@@ -393,7 +394,7 @@ async function triggerPrune(
       `[${new Date().toISOString()}] Pruned ${deleted} Facebook post(s) older than ${retentionDays} day(s)`
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = scraperErrorMessage(err);
     pruneState.lastError = message;
     pruneState.lastCompletedAt = new Date().toISOString();
     diagnostics.completed("prune", false, performance.now() - started, message);

@@ -1,4 +1,5 @@
 import { Pool, type QueryResultRow } from "pg";
+import { scraperErrorMessage } from "./core/errors.js";
 
 function timeout(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -22,7 +23,7 @@ let lastSuccessAt: string | null = null;
 let failureVersion = 0;
 
 function failed(event: string, error: unknown): void {
-  lastError = error instanceof Error ? error.message : String(error);
+  lastError = scraperErrorMessage(error);
   failureVersion++;
   console.error(JSON.stringify({ event, service: "scraper", error: lastError }));
 }

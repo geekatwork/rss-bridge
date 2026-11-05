@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RecoverablePageError, SiteScraper } from "./SiteScraper.js";
 import type { NormalizedItem, ScraperContext, SiteConfig } from "./types.js";
+import { ScraperConfigurationError, ScraperStateError } from "./errors.js";
 
 class ControlledScraper extends SiteScraper {
   public listingCalls = 0;
@@ -105,6 +106,36 @@ describe("SiteScraper run lifecycle", () => {
     enabled: true,
     options: {},
   };
+
+  it("records unusual throws without losing items or skipping shutdown", async () => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")]]);
+    const logger = makeContext().logger;
+    const warn = vi.spyOn(logger, "warn");
+    const error = vi.spyOn(logger, "error");
+    vi.spyOn(scraper, "resolveLinks").mockRejectedValue(Object.create(null));
+    vi.spyOn(scraper, "shutdown").mockRejectedValue({
+      get message() { throw new Error("Broken getter"); },
+      toString() { throw new Error("Broken conversion"); },
+    });
+    const result = await scraper.run(makeContext({ logger }));
+    expect(result.items.map((item) => item.sourceId)).toEqual(["a"]);
+    expect(result.errors).toEqual([
+      "Page 1 (resolve): Unknown thrown object",
+      "Shutdown: Unknown thrown object",
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ error: "Unknown thrown object" }), "Scraper step failed");
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ error: "Unknown thrown object" }), "Error during shutdown");
+    expect(scraper.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([ScraperConfigurationError, ScraperStateError])("does not recover %s page failures", async (ErrorClass) => {
+    const scraper = new ControlledScraper(config, [[makeItem("a")], [makeItem("b")]]);
+    vi.spyOn(scraper, "fetchListing").mockRejectedValue(new ErrorClass("Fatal plugin failure"));
+    const result = await scraper.run(makeContext());
+    expect(result.errors).toEqual(["Page 1 (fetch): Fatal plugin failure"]);
+    expect(scraper.nextCalls).toBe(0);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
 
   it("runs pagination lifecycle and tracks link resolution counters", async () => {
     const scraper = new ControlledScraper(config, [

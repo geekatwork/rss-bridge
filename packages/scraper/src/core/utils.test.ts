@@ -14,6 +14,14 @@ import {
 import type { NormalizedItem } from "./types.js";
 
 describe("core/utils", () => {
+  it("retryWithBackoff retains unusual thrown causes without broken conversion", async () => {
+    const cause = Object.create(null);
+    const fn = vi.fn().mockRejectedValue(cause);
+    await expect(retryWithBackoff(fn, 2, 0)).rejects.toMatchObject({
+      message: "Unknown thrown object", cause,
+    });
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
   it("canonicalizeUrl removes tracking params and trailing slash", () => {
     const input = "https://example.com/path/?utm_source=x&utm_medium=y&fbclid=abc&id=1#frag";
     const output = canonicalizeUrl(input);

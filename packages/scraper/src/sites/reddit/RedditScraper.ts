@@ -1,6 +1,7 @@
 import axios from "axios";
 import { SiteScraper, type NormalizedItem, type ScraperContext, type SiteConfig } from "../../core/index.js";
 import { sleep, getJitteredDelay, textToParagraphHtml } from "../../core/utils.js";
+import { ScraperConfigurationError, ScraperStateError, scraperErrorMessage } from "../../core/errors.js";
 
 /**
  * RedditScraper: Scrapes public subreddit posts via API.
@@ -34,7 +35,7 @@ export class RedditScraper extends SiteScraper {
   async fetchListing(context: ScraperContext): Promise<void> {
     const subreddits = this.config.options.subreddits as string[];
     if (!subreddits || subreddits.length === 0) {
-      throw new Error("No subreddits provided in config.options");
+      throw new ScraperConfigurationError("No subreddits provided in config.options");
     }
 
     this.subreddit = subreddits[0];
@@ -42,7 +43,7 @@ export class RedditScraper extends SiteScraper {
   }
 
   async extractItems(context: ScraperContext): Promise<NormalizedItem[]> {
-    if (!this.subreddit) throw new Error("Subreddit not set");
+    if (!this.subreddit) throw new ScraperStateError("Subreddit not set");
 
     const sort = (this.config.options.sort as string) || "hot";
     const timeFilter = (this.config.options.timeFilter as string) || "week";
@@ -106,7 +107,7 @@ export class RedditScraper extends SiteScraper {
       context.logger.info({ subreddit: this.subreddit, count: items.length }, "Extracted Reddit posts");
       return items;
     } catch (e) {
-      context.logger.error({ subreddit: this.subreddit, error: String(e) }, "Failed to fetch Reddit");
+      context.logger.error({ subreddit: this.subreddit, error: scraperErrorMessage(e) }, "Failed to fetch Reddit");
       throw e;
     }
   }

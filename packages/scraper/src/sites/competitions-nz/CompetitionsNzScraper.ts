@@ -3,6 +3,7 @@ import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "
 import type { ElementHandle, Page } from "puppeteer";
 import { canonicalizeUrl, SiteScraper, type NormalizedItem, type ScraperContext } from "../../core/index.js";
 import { textToParagraphHtml } from "../../core/utils.js";
+import { scraperErrorMessage } from "../../core/errors.js";
 
 const COMPETITIONS_NZ_BASE_URL = "https://www.competitions.co.nz";
 const COMPETITIONS_NZ_LOGIN_URL = `${COMPETITIONS_NZ_BASE_URL}/login/`;
@@ -403,7 +404,7 @@ export class CompetitionsNzScraper extends SiteScraper {
       await this.page.setCookie(...normalizedCookies);
       context.logger.info({ count: normalizedCookies.length, cookiePath }, "Loaded Competitions NZ cookies");
     } catch (error) {
-      context.logger.warn({ cookiePath, error: String(error) }, "Failed to load Competitions NZ cookies");
+      context.logger.warn({ cookiePath, error: scraperErrorMessage(error) }, "Failed to load Competitions NZ cookies");
     }
   }
 
@@ -735,7 +736,7 @@ export class CompetitionsNzScraper extends SiteScraper {
         resolvedLink = await resolveCompetitionsNzDestinationUrl(originalLink, fetch, context.signal);
       } catch (error) {
         context.signal?.throwIfAborted();
-        const message = error instanceof Error ? error.message : "";
+        const message = scraperErrorMessage(error);
         const safeMessage = /^(Manual|Followed) destination lookup returned HTTP \d+$/.test(message)
           || /^Destination request timed out after \d+ms$/.test(message)
           ? message

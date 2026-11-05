@@ -1,9 +1,10 @@
 import type { NormalizedItem, ScraperContext, ScrapeResult, SiteConfig } from "./types.js";
+import { ScraperConfigurationError, scraperErrorMessage } from "./errors.js";
 
 /** A page-local failure after which the plugin can safely check and advance pagination. */
 export class RecoverablePageError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "RecoverablePageError";
   }
 }
@@ -20,6 +21,9 @@ export class RecoverablePageError extends Error {
  * 5. Clean up resources
  *
  * The scheduled orchestrator handles timeouts and database persistence/deduplication.
+ * Methods should throw Error instances. Configuration/state errors are fatal.
+ * Only RecoverablePageError from fetch/extract/resolve permits page advancement;
+ * transport errors and abort reasons remain fatal unless safe advancement is explicit.
  */
 export abstract class SiteScraper {
   protected config: SiteConfig;
@@ -39,6 +43,7 @@ export abstract class SiteScraper {
    * Initialize scraper for this run.
    * Open pages, set cookies, login if needed, etc.
    * Called once per job.
+   * @throws Error for configuration, authentication, setup or resource failures.
    */
   abstract init(context: ScraperContext): Promise<void>;
 
@@ -46,6 +51,7 @@ export abstract class SiteScraper {
    * Fetch the listing page(s) where items are displayed.
     * Example: navigate to a source listing page, search results, or collection view.
    * This is where scrolling, pagination setup happens.
+   * @throws Error to stop; RecoverablePageError only when safe pagination is possible.
    */
   abstract fetchListing(context: ScraperContext): Promise<void>;
 
@@ -53,6 +59,7 @@ export abstract class SiteScraper {
    * Extract items from the current page DOM or API response.
    * Return raw item data; link resolution happens in the next phase.
    * Should extract as much as possible without clicking individual items.
+   * @throws Error to stop; RecoverablePageError only when safe pagination is possible.
    */
   abstract extractItems(context: ScraperContext): Promise<NormalizedItem[]>;
 
@@ -60,24 +67,29 @@ export abstract class SiteScraper {
    * Resolve external links for items that don't have them.
    * Example: click image to open Instagram link, or fetch from API.
    * Modifies items in-place.
+   * @throws Error to stop; RecoverablePageError only when safe pagination is possible.
+   * Partial item updates survive failures.
    */
   abstract resolveLinks(context: ScraperContext, items: NormalizedItem[]): Promise<void>;
 
   /**
    * Check if there are more items to fetch.
    * If true, caller will paginate and call fetchListing → extractItems again.
+   * @throws Error to stop; pagination failures are never recovered automatically.
    */
   abstract hasMorePages(context: ScraperContext): Promise<boolean>;
 
   /**
    * Go to the next page.
    * Example: scroll, click "Next", update API offset, etc.
+   * @throws Error to stop; pagination failures are never recovered automatically.
    */
   abstract nextPage(context: ScraperContext): Promise<void>;
 
   /**
    * Clean up: close pages, clear cookies, disconnect proxy, etc.
    * Called once at end of job, even if there were errors.
+   * @throws Error for cleanup failures, appended to the result without hiding prior errors.
    */
   abstract shutdown(context: ScraperContext): Promise<void>;
 
@@ -97,7 +109,7 @@ export abstract class SiteScraper {
       const configuredMaxPages = context.config.maxPages;
       const maxPages = configuredMaxPages === undefined ? 10 : configuredMaxPages;
       if (typeof maxPages !== "number" || !Number.isSafeInteger(maxPages) || maxPages < 1) {
-        throw new Error("maxPages must be a positive safe integer");
+        throw new ScraperConfigurationError("maxPages must be a positive safe integer");
       }
       context.logger.info({ site: this.config.siteId }, "Initializing scraper");
       context.signal?.throwIfAborted();
@@ -107,7 +119,7 @@ export abstract class SiteScraper {
       let consecutivePageErrors = 0;
       let consecutiveEmptyPages = 0;
       const recordPageError = (step: string, error: unknown): void => {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = scraperErrorMessage(error);
         context.logger.warn(
           { site: this.config.siteId, jobId: context.jobId, page: pageCount + 1, step, error: message },
           "Scraper step failed"
@@ -196,14 +208,14 @@ export abstract class SiteScraper {
 
       context.logger.info({ site: this.config.siteId, total: allItems.length }, "Scraping completed");
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = scraperErrorMessage(e);
       context.logger.error({ site: this.config.siteId, error: msg }, "Fatal error during scrape");
       errors.push(msg);
     } finally {
       try {
         await this.shutdown(context);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = scraperErrorMessage(e);
         context.logger.error({ site: this.config.siteId, jobId: context.jobId, error: msg }, "Error during shutdown");
         errors.push(`Shutdown: ${msg}`);
       }

@@ -27,6 +27,9 @@ export class RecoverablePageError extends Error {
  * ScrapeEngine owns the browser; plugins own only resources they create.
  * Store newly allocated pages before setup that can fail, and release them in shutdown.
  * Do not close borrowed browsers/pages or enumerate and close another job's tabs.
+ * A scraper instance is per job and must not run overlapping lifecycles.
+ * Keep pagination/page state instance-local. Scheduled groups are serial; custom
+ * parallel groups should use distinct engines/browsers for cookie and cancellation isolation.
  */
 export abstract class SiteScraper {
   protected config: SiteConfig;

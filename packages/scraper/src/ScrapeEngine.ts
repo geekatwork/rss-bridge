@@ -13,6 +13,10 @@ import { ScraperConfigurationError, ScraperStateError, scraperErrorMessage } fro
  * - Job queuing and execution
  * - Site registration
  * - Logging and metrics
+ *
+ * Scheduled groups each use a fresh engine and run serially. Custom parallel
+ * groups should use separate engines; one engine shares browser cookie state,
+ * and shutdown aborts all work using that browser. Do not overlap init calls.
  */
 export class ScrapeEngine {
   private logger: pino.Logger;
@@ -123,6 +127,7 @@ export class ScrapeEngine {
 
   /**
    * Run scrape jobs for all enabled sites.
+   * Sequential, not Promise.all; a fresh plugin/context is created for each job.
    */
   async scrapeAll(): Promise<ScrapeResult[]> {
     const results: ScrapeResult[] = [];

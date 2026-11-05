@@ -108,6 +108,43 @@ The browser engine's existing launch/shutdown methods are the shared browser
 lifecycle implementation; no second browser-launch wrapper is necessary.
 The example, Facebook and Competitions NZ plugins reuse `closeOwnedPage`.
 
+## Concurrency model
+
+Production scheduling is serial within one scraper process. `runAllGroups`
+awaits each group's scrape, persistence and engine shutdown before starting the
+next group. The shared `runInProgress` guard covers the entire cycle and prune:
+overlapping ordinary schedules are skipped, while missed executions coalesce
+into the serialized recovery queue. A timeout aborts the group and closes its
+browser, but retains the guard until active work settles. `scrapeAll()` also
+runs sites sequentially.
+
+Each scheduled group gets its own `ScrapeEngine`, browser and abort controller.
+Each `scrapeOne()` creates a new plugin instance, context and random job ID.
+Plugin page/pagination state must stay instance-local; never reuse one plugin
+instance for overlapping `run()` calls. The registry shares constructors, not
+plugin instances.
+
+Custom callers can overlap different groups/sites with separate engines, using
+`Promise.all` and a `finally` that awaits every engine's shutdown. This provides
+browser cookie/session, cancellation and cleanup isolation even for two groups
+using the same plugin. Separate plugin instances on one engine still share the
+browser's cookies, and shutting down that engine affects every job using it;
+that is not the supported group-isolation pattern. Do not overlap engine init
+or shut down an engine while unrelated work still needs its browser.
+
+No additional mutex is needed for the current single-process serial scheduler.
+Its in-memory guard is not distributed: multiple scraper replicas would need
+cross-process scheduling/retention coordination before being enabled. Database
+uniqueness prevents duplicate rows, not concurrent browser sessions or duplicate
+scrape work. Parallelism would also require deliberate resource/rate budgets.
+This story validates isolation; it does not enable production parallelism.
+
+Tests in `ScrapeEngine.test.ts` use explicit barriers to prove two separate
+engines overlap for same-site and different-site jobs, with distinct contexts,
+configurations, job IDs and browser ownership. Cancelling/closing one leaves the
+other able to finish. `index.test.ts` verifies persistence/cleanup serialization,
+overlap/prune exclusion and deadline settlement before releasing the run guard.
+
 ## Current File Structure
 
 ```text

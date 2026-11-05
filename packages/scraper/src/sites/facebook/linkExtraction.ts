@@ -173,6 +173,9 @@ export function extractFacebookLinkFromHtmlBlob(htmlBlob: string): FacebookLinkE
     blobCandidates.push(`https://www.facebook.com/photo/?fbid=${photoIdMatch[1]}`);
   }
 
+  const contentLink = extractFacebookPostLinkFromCandidates(blobCandidates).link;
+  if (contentLink) return extractFacebookLinkFromCandidate(contentLink);
+
   for (const candidate of blobCandidates) {
     const extracted = extractFacebookLinkFromCandidate(candidate.trim());
     if (extracted.link) return extracted;
@@ -189,6 +192,30 @@ export function extractFacebookPageFallbackFromCandidates(candidates: string[]):
     }
   }
   return null;
+}
+
+export function extractFacebookListingLink(candidates: string[], htmlBlob: string): string | null {
+  const contentLink = extractFacebookPostLinkFromCandidates(candidates).link;
+  if (contentLink) return contentLink;
+  const embedded = extractFacebookLinkFromHtmlBlob(htmlBlob);
+  return embedded.postId ? embedded.link : null;
+}
+
+export function normalizeFacebookClickDestination(raw: string, groupUrl: string): string | null {
+  try {
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+    const extracted = extractFacebookLinkFromCandidate(raw);
+    if (extracted.postId) return extracted.link;
+    if (/^(?:[^.]+\.)*facebook\.com$/i.test(url.hostname)) return null;
+    const group = new URL(groupUrl);
+    if (url.origin === group.origin && url.pathname.replace(/\/+$/, "") === group.pathname.replace(/\/+$/, "")) {
+      return null;
+    }
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -248,31 +275,13 @@ export function extractFacebookPostLinkFromCandidates(candidates: string[]): { l
 }
 
 /**
- * For album/multi-photo posts, Facebook CDN image URLs embed the parent photo ID in the
- * filename segment (e.g. `v/t39.30808-6/<digits>_<photoId>_<digits>_n.jpg`).
- * We scan all image URLs, extract the embedded fbid, and return the first
- * `photo.php?fbid=<id>` we can construct from them.
- * Returns null if no suitable ID is found.
+ * Only explicit photo IDs are usable. CDN filename numbers are not a verified
+ * mapping to Facebook content IDs.
  */
 export function extractFacebookAlbumLinkFromImageUrls(imageUrls: string[]): string | null {
   for (const url of imageUrls) {
     // Skip tiny thumbnails (profile pics, avatars are in t39.30808-1 or have p38x38 in stp)
     if (/t39\.30808-1\/|p3[0-9]x3[0-9]_|p4[0-5]x4[0-5]_/.test(url)) continue;
-
-    // CDN filename pattern: /<digits>_<photoLikeId>_<digits>_n.jpg
-    // In captured fixtures this embedded ID is consistently +6,000,000 from the canonical photo fbid,
-    // so normalize by subtracting 6 to recover the permalink id.
-    const filenameMatch = url.match(/\/(\d+)_(\d{10,})_\d+_n\./i);
-    if (filenameMatch) {
-      try {
-        const normalized = (BigInt(filenameMatch[2]) - 6000000n).toString();
-        if (/^\d{10,}$/.test(normalized)) {
-          return `https://www.facebook.com/photo.php?fbid=${normalized}`;
-        }
-      } catch {
-        // ignore invalid bigint conversion and continue fallbacks
-      }
-    }
 
     // Fallback: fbid embedded in stp query param (e.g. s_fbid=<id>)
     const stpFbidMatch = url.match(/[?&](?:fbid|s_fbid)=(\d{10,})/i);

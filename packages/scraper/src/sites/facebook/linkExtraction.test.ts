@@ -3,6 +3,8 @@ import {
   extractFacebookLinkFromCandidate,
   extractFacebookLinkFromHtmlBlob,
   extractFacebookPageFallbackFromCandidates,
+  extractFacebookListingLink,
+  normalizeFacebookClickDestination,
 } from "./linkExtraction.js";
 import { extractFacebookAlbumLinkFromImageUrls, extractFacebookPostLinkFromCandidates, extractFirstImageUrl } from "./linkExtraction.js";
 
@@ -267,13 +269,11 @@ describe("extractFacebookPostLinkFromCandidates", () => {
 });
 
 describe("extractFacebookAlbumLinkFromImageUrls", () => {
-  it("extracts canonical photo link from CDN filename pattern", () => {
+  it("does not invent photo IDs from CDN filename numbers", () => {
     const urls = [
       "https://scontent.example.com/v/t39.30808-6/12345_122229060350121725_67890_n.jpg?...",
     ];
-    expect(extractFacebookAlbumLinkFromImageUrls(urls)).toBe(
-      "https://www.facebook.com/photo.php?fbid=122229060344121725",
-    );
+    expect(extractFacebookAlbumLinkFromImageUrls(urls)).toBeNull();
   });
 
   it("skips thumbnail/avatar CDN URLs (t39.30808-1)", () => {
@@ -306,6 +306,51 @@ describe("extractFirstImageUrl", () => {
     ];
 
     expect(extractFirstImageUrl(urls)).toBe(urls[1]);
+  });
+
+  describe("Facebook listing link priority", () => {
+    it("defers profile fallback while a post might be resolved by clicking", () => {
+      expect(extractFacebookListingLink(["/SyntheticAuthor"], "")).toBeNull();
+    });
+
+    it("finds concrete content after profile links in candidates and HTML", () => {
+      const profile = "https://www.facebook.com/SyntheticAuthor";
+      const post = "https://www.facebook.com/groups/123456789/posts/987654321/";
+      const expected = "https://www.facebook.com/groups/123456789/permalink/987654321/";
+      expect(extractFacebookListingLink([profile, post], "")).toBe(expected);
+      const html = `<a href="${profile}">Synthetic author</a><a href="${post}">Post</a>`;
+      expect(extractFacebookLinkFromHtmlBlob(html).link).toBe(expected);
+      expect(extractFacebookListingLink([profile], html)).toBe(expected);
+    });
+  });
+
+  describe("clicked Facebook destinations", () => {
+    const group = "https://www.facebook.com/groups/123456789/?sorting_setting=CHRONOLOGICAL";
+
+    it("accepts group sub-page permalinks instead of treating them as landing pages", () => {
+      expect(normalizeFacebookClickDestination(
+        "https://www.facebook.com/groups/123456789/posts/987654321/", group,
+      )).toBe("https://www.facebook.com/groups/123456789/permalink/987654321/");
+    });
+
+    it("preserves photo IDs and required external query parameters", () => {
+      expect(normalizeFacebookClickDestination("https://www.facebook.com/photo.php?fbid=123456789", group))
+        .toBe("https://www.facebook.com/photo.php?fbid=123456789");
+      expect(normalizeFacebookClickDestination("https://example.test/enter?competition=123#entry", group))
+        .toBe("https://example.test/enter?competition=123#entry");
+    });
+
+    it.each([
+      "https://m.facebook.com/groups/123456789/",
+      "https://www.facebook.com/groups/123456789/?ref=share",
+      "https://www.facebook.com/login.php?next=group",
+      "https://www.facebook.com/",
+      "https://www.facebook.com/SyntheticAuthor",
+      "about:blank",
+      "javascript:void(0)",
+    ])("rejects non-content click destination %s", (url) => {
+      expect(normalizeFacebookClickDestination(url, group)).toBeNull();
+    });
   });
 
   it("returns null when only avatars/tiny images exist", () => {

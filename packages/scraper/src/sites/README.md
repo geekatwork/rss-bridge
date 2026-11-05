@@ -61,6 +61,21 @@ Each file in this directory implements a `SiteScraper` for a specific content so
 - Clicks images to resolve Instagram links
 - Extracts timestamps, authors, text, images
 
+Facebook link extraction searches all candidates and embedded HTML for concrete
+content links before assigning page/profile fallbacks. Native image clicks are
+retained, but targets are reacquired by a unique captured text-and-media
+fingerprint, never a saved virtualized child index. Targets are checked again
+after scrolling and before each click; absent or ambiguous identities are logged
+and use captured-link/image fallbacks instead of another post's DOM. CDN query
+changes are ignored when matching images, but filename numbers are never
+converted into guessed photo IDs. Clicked group permalinks are accepted, group
+landing/login pages are rejected, and required destination query parameters are
+preserved. Content trimming is unchanged.
+
+Mandatory synthetic browser regressions live in `facebook/linkResolution.test.ts`;
+optional local unresolved dumps remain ignored and must not contain committed
+personal source content or credentials.
+
 ### Reddit Scraper (`reddit/RedditScraper.ts`)
 - Fetches subreddit feed
 - Extracts posts, comments, scores

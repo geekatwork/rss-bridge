@@ -2,8 +2,7 @@ import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { describe, expect, it } from "vitest";
 import {
-  extractFacebookLinkFromCandidate,
-  extractFacebookLinkFromHtmlBlob,
+  extractFacebookListingLink,
   extractFacebookPageFallbackFromCandidates,
 } from "./linkExtraction.js";
 import { extractFacebookAlbumLinkFromImageUrls, extractFacebookPostLinkFromCandidates } from "./linkExtraction.js";
@@ -34,15 +33,8 @@ function loadFixtures(): UnresolvedFacebookFixture[] {
 }
 
 function replayFixture(fixture: UnresolvedFacebookFixture): string | null {
-  for (const candidate of fixture.candidateUrls) {
-    const extracted = extractFacebookLinkFromCandidate(candidate);
-    if (extracted.link) return extracted.link;
-  }
-
-  if (fixture.contentHtml) {
-    const extracted = extractFacebookLinkFromHtmlBlob(fixture.contentHtml);
-    if (extracted.link) return extracted.link;
-  }
+  const initialLink = extractFacebookListingLink(fixture.candidateUrls, fixture.contentHtml || "");
+  if (initialLink) return initialLink;
 
   if (fixture.candidateUrls.length > 0) {
     const { link: postLink } = extractFacebookPostLinkFromCandidates(fixture.candidateUrls);

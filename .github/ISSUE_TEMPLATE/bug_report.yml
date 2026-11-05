@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible problem without credentials or private source content.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For vulnerabilities, use private reporting linked in the issue chooser.
+        Do not attach cookies, tokens, passwords, private scraped content or database dumps.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and expected behavior
+      description: Explain what happened and what should have happened.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include minimal steps and sanitized example configuration or synthetic input.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit/version, affected service/source plugin, operating system, and Docker/Node versions.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Relevant error messages, timestamps with timezone, run/job IDs and health output. Redact sensitive values.

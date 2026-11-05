@@ -1,0 +1,16 @@
+/.github/ @geekatwork
+/SECURITY.md @geekatwork
+/docker-compose*.yml @geekatwork
+/**/Dockerfile* @geekatwork
+/.env.example @geekatwork
+/db/ @geekatwork
+/scripts/ @geekatwork
+/**/package.json @geekatwork
+/**/package-lock.json @geekatwork
+/packages/scraper/src/sourceConfig.ts @geekatwork
+/packages/scraper/src/index.ts @geekatwork
+/packages/scraper/src/ScrapeEngine.ts @geekatwork
+/packages/scraper/src/db.ts @geekatwork
+/packages/scraper/src/prune.ts @geekatwork
+/packages/scraper/src/core/ @geekatwork
+/packages/feed-generator/src/ @geekatwork

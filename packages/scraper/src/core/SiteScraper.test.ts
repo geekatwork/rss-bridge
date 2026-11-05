@@ -303,4 +303,96 @@ describe("SiteScraper run lifecycle", () => {
     expect(scraper.listingCalls).toBe(1);
     expect(scraper.nextCalls).toBe(0);
   });
+
+  it("stops after exactly three empty pages despite a plugin claiming more pages", async () => {
+    const scraper = new ControlledScraper(config, []);
+    const more = vi.spyOn(scraper, "hasMorePages").mockResolvedValue(true);
+    const context = makeContext();
+    const info = vi.spyOn(context.logger, "info");
+    const result = await scraper.run(context);
+    expect(scraper.listingCalls).toBe(3);
+    expect(scraper.nextCalls).toBe(2);
+    expect(more).toHaveBeenCalledTimes(2);
+    expect(result.items).toEqual([]);
+    expect(result.errors).toEqual([]);
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({ consecutiveEmptyPages: 3, page: 3, jobId: "job-1" }),
+      "Stopping after three consecutive empty pages"
+    );
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("resets the empty counter after a nonempty page and retains earlier items", async () => {
+    const scraper = new ControlledScraper(config, [
+      [], [], [makeItem("found")], [], [], [], [makeItem("not-reached")],
+    ]);
+    const result = await scraper.run(makeContext());
+    expect(scraper.listingCalls).toBe(6);
+    expect(scraper.nextCalls).toBe(5);
+    expect(result.items.map(item => item.sourceId)).toEqual(["found"]);
+    expect(result.errors).toEqual([]);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("does not count failed pages as consecutive successful empty pages", async () => {
+    const scraper = new ControlledScraper(config, [[], [], [], [], [], [], [makeItem("later")]]);
+    vi.spyOn(scraper, "extractItems").mockRejectedValueOnce(new RecoverablePageError("temporary failure"))
+      .mockResolvedValueOnce([]).mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new RecoverablePageError("another failure"))
+      .mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const result = await scraper.run(makeContext());
+    expect(scraper.listingCalls).toBe(7);
+    expect(result.items.map(item => item.sourceId)).toEqual(["later"]);
+    expect(result.errors).toHaveLength(2);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("stops repeated recoverable fetch failures after three attempts", async () => {
+    const scraper = new ControlledScraper(config, []);
+    const fetch = vi.spyOn(scraper, "fetchListing").mockRejectedValue(new RecoverablePageError("fetch unavailable"));
+    vi.spyOn(scraper, "hasMorePages").mockResolvedValue(true);
+    const result = await scraper.run(makeContext());
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(scraper.nextCalls).toBe(2);
+    expect(result.errors).toHaveLength(3);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it.each([1, 2, 5])("stops at maxPages=%s when the plugin always reports more", async (maxPages) => {
+    const scraper = new ControlledScraper(config, []);
+    vi.spyOn(scraper, "extractItems").mockImplementation(async () => [makeItem(`page-${scraper.listingCalls}`)]);
+    const more = vi.spyOn(scraper, "hasMorePages").mockResolvedValue(true);
+    const result = await scraper.run(makeContext({ config: { maxPages } }));
+    expect(scraper.listingCalls).toBe(maxPages);
+    expect(scraper.nextCalls).toBe(maxPages - 1);
+    expect(more).toHaveBeenCalledTimes(maxPages - 1);
+    expect(result.items).toHaveLength(maxPages);
+    expect(result.errors).toEqual([]);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it("uses the default ten-page limit when no maxPages is configured", async () => {
+    const scraper = new ControlledScraper(config, []);
+    vi.spyOn(scraper, "extractItems").mockResolvedValue([makeItem("same-page")]);
+    vi.spyOn(scraper, "hasMorePages").mockResolvedValue(true);
+    const result = await scraper.run(makeContext({ config: {} }));
+    expect(scraper.listingCalls).toBe(10);
+    expect(scraper.nextCalls).toBe(9);
+    expect(result.errors).toEqual([]);
+    expect(scraper.shutdownCalls).toBe(1);
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, "5", null, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid maxPages=%s before initialization and still cleans up", async (maxPages) => {
+      const scraper = new ControlledScraper(config, []);
+      const context = makeContext({ config: { maxPages } });
+      const error = vi.spyOn(context.logger, "error");
+      const result = await scraper.run(context);
+      expect(result.errors).toEqual(["maxPages must be a positive safe integer"]);
+      expect(error).toHaveBeenCalled();
+      expect(scraper.initCalls).toBe(0);
+      expect(scraper.listingCalls).toBe(0);
+      expect(scraper.shutdownCalls).toBe(1);
+    }
+  );
 });

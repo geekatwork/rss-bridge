@@ -94,13 +94,18 @@ export abstract class SiteScraper {
     let linksFailed = 0;
 
     try {
+      const configuredMaxPages = context.config.maxPages;
+      const maxPages = configuredMaxPages === undefined ? 10 : configuredMaxPages;
+      if (typeof maxPages !== "number" || !Number.isSafeInteger(maxPages) || maxPages < 1) {
+        throw new Error("maxPages must be a positive safe integer");
+      }
       context.logger.info({ site: this.config.siteId }, "Initializing scraper");
       context.signal?.throwIfAborted();
       await this.init(context);
 
       let pageCount = 0;
       let consecutivePageErrors = 0;
-      const maxPages = (context.config.maxPages as number) ?? 10;
+      let consecutiveEmptyPages = 0;
       const recordPageError = (step: string, error: unknown): void => {
         const message = error instanceof Error ? error.message : String(error);
         context.logger.warn(
@@ -115,6 +120,7 @@ export abstract class SiteScraper {
         context.signal?.throwIfAborted();
         let step = "fetch";
         let pageFailed = false;
+        let emptyPage = false;
         try {
           context.logger.debug({ site: this.config.siteId, page: pageCount + 1 }, "Fetching listing");
           await this.fetchListing(context);
@@ -125,6 +131,7 @@ export abstract class SiteScraper {
           const items = await this.extractItems(context);
           context.signal?.throwIfAborted();
           context.logger.info({ site: this.config.siteId, page: pageCount + 1, count: items.length }, "Extracted items");
+          emptyPage = items.length === 0;
 
           if (items.length > 0) {
             step = "resolve";
@@ -153,7 +160,19 @@ export abstract class SiteScraper {
           }
         }
 
-        if (!pageFailed) consecutivePageErrors = 0;
+        if (!pageFailed) {
+          consecutivePageErrors = 0;
+          consecutiveEmptyPages = emptyPage ? consecutiveEmptyPages + 1 : 0;
+          if (consecutiveEmptyPages >= 3) {
+            context.logger.info(
+              { site: this.config.siteId, jobId: context.jobId, page: pageCount + 1, consecutiveEmptyPages },
+              "Stopping after three consecutive empty pages"
+            );
+            break;
+          }
+        } else {
+          consecutiveEmptyPages = 0;
+        }
         if (allItems.length >= (context.maxItems ?? 100) || pageCount + 1 >= maxPages) break;
 
         try {

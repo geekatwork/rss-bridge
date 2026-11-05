@@ -59,6 +59,26 @@ Design goals:
   - Ensures groups
   - Upserts normalized items
 
+## Error contract
+
+Lifecycle methods should throw `Error` instances. Core exports
+`ScraperConfigurationError` for invalid configuration/registration,
+`ScraperStateError` for invalid engine/plugin lifecycle state, and
+`RecoverablePageError` for page-local failures with safe pagination advancement.
+All support an optional `cause`. Configuration, state, transport, authentication,
+and cancellation errors remain fatal; only explicit `RecoverablePageError`
+from fetch/extract/resolve enables advancement. Pagination and cleanup failures
+never implicitly retry. The runner preserves partial resolved items and prior
+errors and always attempts shutdown.
+
+`scraperErrorMessage(unknown)` is the shared caught-error boundary for plugin,
+engine, scheduler, retry, and database health reporting. It preserves ordinary
+Error messages and string-valued own data `message` properties, handles primitive
+throws, and reports unsupported objects explicitly without serializing arbitrary
+request/credential payloads or calling object getters/toString. Malformed
+accessors/proxies cannot prevent error reporting. `ScrapeResult.errors` remains
+`string[]`; no retry classification or alert policy changes are introduced.
+
 ## Current File Structure
 
 ```text

@@ -50,6 +50,7 @@ vi.mock("./core/index.js", () => ({
 }));
 
 import { ScrapeEngine } from "./ScrapeEngine.js";
+import { ScraperConfigurationError, ScraperStateError } from "./core/errors.js";
 
 describe("ScrapeEngine", () => {
   beforeEach(() => {
@@ -83,6 +84,27 @@ describe("ScrapeEngine", () => {
   it("registers all scrapers in constructor", () => {
     new ScrapeEngine();
     expect(registerAllScrapersMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("distinguishes invalid engine state from unregistered site configuration", async () => {
+    const engine = new ScrapeEngine();
+    await expect(engine.scrapeOne("missing")).rejects.toBeInstanceOf(ScraperStateError);
+    await engine.init();
+    await expect(engine.scrapeOne("missing")).rejects.toBeInstanceOf(ScraperConfigurationError);
+    await engine.shutdown();
+  });
+
+  it("scrapeAll reports unusual thrown values without serializing payloads", async () => {
+    const engine = new ScrapeEngine();
+    await engine.init();
+    engine.registerSite(enabledConfig("facebook"));
+    scraperRunMock.mockRejectedValue(Object.create(null));
+    const results = await engine.scrapeAll();
+    expect(results[0].errors).toEqual(["Unknown thrown object"]);
+    expect(logger.error).toHaveBeenCalledWith(
+      { siteId: "facebook", error: "Unknown thrown object" }, "Scrape job failed",
+    );
+    await engine.shutdown();
   });
 
   it("initializes browser via puppeteer", async () => {
@@ -193,7 +215,7 @@ describe("ScrapeEngine", () => {
 
     await expect(engine.shutdown()).rejects.toThrow(closeError);
     expect(logger.error).toHaveBeenCalledWith(
-      { error: closeError },
+      { error: closeError.message },
       "Failed to close browser during shutdown"
     );
   });

@@ -1,5 +1,6 @@
 import type { SiteScraper } from "./SiteScraper.js";
 import type { SiteConfig } from "./types.js";
+import { ScraperConfigurationError } from "./errors.js";
 
 /**
  * Registry of all available site scrapers.
@@ -22,12 +23,12 @@ export class ScrapeRegistry {
 
   /**
    * Get a scraper instance for a site ID.
-   * @throws if site is not registered
+   * @throws ScraperConfigurationError if site is not registered
    */
   get(siteId: string, config: SiteConfig): SiteScraper {
     const ScraperClass = this.scrapers.get(siteId);
     if (!ScraperClass) {
-      throw new Error(`No scraper registered for site: ${siteId}`);
+      throw new ScraperConfigurationError(`No scraper registered for site: ${siteId}`);
     }
     return new ScraperClass(config);
   }

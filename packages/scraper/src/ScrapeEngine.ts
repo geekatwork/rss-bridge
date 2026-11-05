@@ -3,6 +3,7 @@ import pino from "pino";
 import { randomUUID } from "crypto";
 import { globalRegistry, type ScrapeResult, type ScraperContext, type SiteConfig } from "./core/index.js";
 import { registerAllScrapers } from "./sites/index.js";
+import { ScraperConfigurationError, ScraperStateError, scraperErrorMessage } from "./core/errors.js";
 
 /**
  * ScrapeEngine: Orchestrates site scraper jobs.
@@ -30,7 +31,7 @@ export class ScrapeEngine {
    */
   async init(signal?: AbortSignal): Promise<void> {
     if (this.shutdownRequested) {
-      throw new Error("Cannot initialize ScrapeEngine after shutdown was requested");
+      throw new ScraperStateError("Cannot initialize ScrapeEngine after shutdown was requested");
     }
     signal?.throwIfAborted();
     this.logger.info("Initializing ScrapeEngine");
@@ -48,7 +49,7 @@ export class ScrapeEngine {
     if (signal?.aborted || this.shutdownRequested) {
       await this.shutdown();
       signal?.throwIfAborted();
-      throw new Error("ScrapeEngine shutdown requested during initialization");
+      throw new ScraperStateError("ScrapeEngine shutdown requested during initialization");
     }
     this.logger.info("Browser launched");
   }
@@ -65,11 +66,11 @@ export class ScrapeEngine {
    * Run a scrape job for a specific site.
    */
   async scrapeOne(siteId: string, signal?: AbortSignal): Promise<ScrapeResult> {
-    if (!this.browser) throw new Error("Engine not initialized");
+    if (!this.browser) throw new ScraperStateError("Engine not initialized");
     signal?.throwIfAborted();
 
     const config = this.siteConfigs.get(siteId);
-    if (!config) throw new Error(`Site not registered: ${siteId}`);
+    if (!config) throw new ScraperConfigurationError(`Site not registered: ${siteId}`);
 
     if (!config.enabled) {
       this.logger.info({ siteId }, "Site disabled; skipping");
@@ -130,12 +131,13 @@ export class ScrapeEngine {
         const result = await this.scrapeOne(siteId);
         results.push(result);
       } catch (e) {
-        this.logger.error({ siteId, error: String(e) }, "Scrape job failed");
+        const message = scraperErrorMessage(e);
+        this.logger.error({ siteId, error: message }, "Scrape job failed");
         results.push({
           site: siteId,
           jobId: randomUUID(),
           items: [],
-          errors: [String(e)],
+          errors: [message],
           startedAt: new Date(),
           completedAt: new Date(),
           durationMs: 0,
@@ -161,7 +163,7 @@ export class ScrapeEngine {
     this.browserClosePromise = Promise.resolve().then(() => browser.close()).then(() => {
       this.logger.info("Browser closed");
     }).catch((error: unknown) => {
-      this.logger.error({ error }, "Failed to close browser during shutdown");
+      this.logger.error({ error: scraperErrorMessage(error) }, "Failed to close browser during shutdown");
       throw error;
     });
     return this.browserClosePromise;

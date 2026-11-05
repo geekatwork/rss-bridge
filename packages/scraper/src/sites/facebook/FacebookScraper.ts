@@ -14,6 +14,7 @@ import {
 import { extractFacebookAlbumLinkFromImageUrls, extractFacebookPostLinkFromCandidates } from "./linkExtraction.js";
 import type { NormalizedPost } from "../../types.js";
 import { findFacebookPost, type FacebookPostIdentity } from "./postIdentity.js";
+import { ScraperConfigurationError, scraperErrorMessage } from "../../core/errors.js";
 
 // --- MAIN EXPORTS ---
 export function cleanFacebookPostText(raw: string, author?: string): string {
@@ -537,7 +538,7 @@ export class FacebookScraper extends SiteScraper {
         await this.page.setCookie(...normalizedCookies);
         context.logger.info({ count: cookies.length, cookiePath }, "Loaded Facebook cookies");
       } catch (e) {
-        context.logger.warn({ error: String(e) }, "Failed to load cookies");
+        context.logger.warn({ error: scraperErrorMessage(e) }, "Failed to load cookies");
       }
     } else {
       context.logger.warn({ cookiePathCandidates }, "Cookie file not found; Facebook may show login wall");
@@ -551,7 +552,7 @@ export class FacebookScraper extends SiteScraper {
     const stopAtSourceId = this.config.options.stopAtSourceId as string | undefined;
     const boundaryFallbackLimit = (this.config.options.boundaryFallbackLimit as number) || 50;
     if (!groupIds || groupIds.length === 0) {
-      throw new Error("No groupIds provided in config.options");
+      throw new ScraperConfigurationError("No groupIds provided in config.options");
     }
 
     // Graph API path: fetch directly and store items for extractItems()
@@ -1095,7 +1096,7 @@ export class FacebookScraper extends SiteScraper {
                   finish(null);
                 }
               } catch (error) {
-                context.logger.warn({ id: item.sourceId, error: String(error) }, "Failed to read clicked popup");
+                context.logger.warn({ id: item.sourceId, error: scraperErrorMessage(error) }, "Failed to read clicked popup");
                 finish(null);
               }
             };
@@ -1156,7 +1157,7 @@ export class FacebookScraper extends SiteScraper {
         }
 
       } catch (e) {
-        context.logger.warn({ id: item.sourceId, error: e instanceof Error ? e.stack : String(e) }, "Failed to resolve link");
+        context.logger.warn({ id: item.sourceId, error: scraperErrorMessage(e) }, "Failed to resolve link");
       }
     }
   }

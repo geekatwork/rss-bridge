@@ -1,5 +1,6 @@
 import * as crypto from "crypto";
 import type { NormalizedItem } from "./types.js";
+import { scraperErrorMessage } from "./errors.js";
 
 /**
  * Compute a hash of item content for deduplication.
@@ -56,7 +57,7 @@ export async function retryWithBackoff<T>(
     try {
       return await fn();
     } catch (e) {
-      lastError = e instanceof Error ? e : new Error(String(e));
+      lastError = e instanceof Error ? e : new Error(scraperErrorMessage(e), { cause: e });
       if (attempt < maxAttempts) {
         const delayMs = initialDelayMs * Math.pow(backoffMultiplier, attempt - 1);
         await sleep(delayMs);

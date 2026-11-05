@@ -79,6 +79,35 @@ request/credential payloads or calling object getters/toString. Malformed
 accessors/proxies cannot prevent error reporting. `ScrapeResult.errors` remains
 `string[]`; no retry classification or alert policy changes are introduced.
 
+## Resource ownership and cleanup
+
+- The scheduled orchestrator creates an engine for each group and always awaits
+  engine shutdown. On a group deadline it aborts the signal, requests browser
+  shutdown, and waits for active work to settle before starting the next group.
+- `ScrapeEngine` owns browser launch/close. Its shutdown request is terminal;
+  repeated calls share the same close promise, including a close failure.
+  Plugins borrow `context.browser` and must not launch/close it themselves.
+- Plugins own pages allocated with `context.browser.newPage()`. Assign each page
+  to a field immediately, before viewport/cookie/login setup can fail.
+  `SiteScraper.run()` attempts plugin shutdown even after partial initialization,
+  cancellation, extraction or resolution failure. API-only plugins need not
+  allocate any pages.
+- Detach page fields before awaiting cleanup. Use shared
+  `closeOwnedPage(page)` for absent/already-closed pages and normal close;
+  failures propagate for the runner to log and append to existing result errors.
+  Reset other plugin state in `finally` when page closure can fail.
+- Dispose temporary JS/element handles in `finally`. Remove only listeners and
+  timers created by the plugin, including timeout/failure paths. Scope popup
+  ownership to its opener; never close all browser tabs or mutate another job's
+  page. `context.page`, if supplied, is borrowed unless explicitly transferred.
+- Use abort-aware bounded requests and check `context.signal` around long work.
+  Cancellation does not replace cleanup. Browser closure may have already
+  closed a plugin's page; cleanup must tolerate that without hiding real errors.
+
+The browser engine's existing launch/shutdown methods are the shared browser
+lifecycle implementation; no second browser-launch wrapper is necessary.
+The example, Facebook and Competitions NZ plugins reuse `closeOwnedPage`.
+
 ## Current File Structure
 
 ```text

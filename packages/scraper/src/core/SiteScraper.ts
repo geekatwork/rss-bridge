@@ -24,6 +24,9 @@ export class RecoverablePageError extends Error {
  * Methods should throw Error instances. Configuration/state errors are fatal.
  * Only RecoverablePageError from fetch/extract/resolve permits page advancement;
  * transport errors and abort reasons remain fatal unless safe advancement is explicit.
+ * ScrapeEngine owns the browser; plugins own only resources they create.
+ * Store newly allocated pages before setup that can fail, and release them in shutdown.
+ * Do not close borrowed browsers/pages or enumerate and close another job's tabs.
  */
 export abstract class SiteScraper {
   protected config: SiteConfig;
@@ -43,6 +46,7 @@ export abstract class SiteScraper {
    * Initialize scraper for this run.
    * Open pages, set cookies, login if needed, etc.
    * Called once per job.
+   * Record owned resources immediately so shutdown can clean up partial initialization.
    * @throws Error for configuration, authentication, setup or resource failures.
    */
   abstract init(context: ScraperContext): Promise<void>;
@@ -89,6 +93,9 @@ export abstract class SiteScraper {
   /**
    * Clean up: close pages, clear cookies, disconnect proxy, etc.
    * Called once at end of job, even if there were errors.
+   * Close only owned pages, dispose handles, remove owned listeners and cancel owned timers.
+   * Detach resource references before awaiting cleanup; tolerate already-closed pages
+   * (the engine may close the browser on timeout). Use closeOwnedPage for page cleanup.
    * @throws Error for cleanup failures, appended to the result without hiding prior errors.
    */
   abstract shutdown(context: ScraperContext): Promise<void>;

@@ -1,6 +1,6 @@
 import type { Page } from "puppeteer";
 import { SiteScraper, type NormalizedItem, type ScraperContext, type SiteConfig } from "../core/index.js";
-import { sleep, textToParagraphHtml } from "../core/utils.js";
+import { closeOwnedPage, sleep, textToParagraphHtml } from "../core/utils.js";
 
 /**
  * TEMPLATE: ExampleScraper
@@ -186,7 +186,7 @@ export class ExampleScraper extends SiteScraper {
     if (this.page) {
       const page = this.page;
       this.page = undefined;
-      if (!page.isClosed()) await page.close();
+      await closeOwnedPage(page);
     }
     context.logger.debug({ site: this.config.siteId }, "Shutdown complete");
   }

@@ -37,11 +37,11 @@ export interface NormalizedItem {
  * Provides browser, logging, configuration, and metadata.
  */
 export interface ScraperContext {
-  /** Puppeteer browser instance shared across all sites */
+  /** Borrowed from ScrapeEngine; plugins close only their own pages, never this browser. */
   browser: Browser;
   /** Aborted when the orchestrator's bounded scrape deadline expires. */
   signal?: AbortSignal;
-  /** Current page if one is active */
+  /** Optional borrowed page; a plugin must not close it unless ownership is explicitly transferred. */
   page?: Page;
   /** Structured logger (pino) */
   logger: Logger;

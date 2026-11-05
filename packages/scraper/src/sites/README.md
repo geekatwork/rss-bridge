@@ -95,6 +95,18 @@ personal source content or credentials.
 5. **Deduplicate** — Use computeContentHash() + store hashes in DB
 6. **Test with fixture HTML** — Mock responses instead of live scraping during dev
 
+## Resource lifecycle
+
+Borrow the engine's `context.browser`; never close it from a plugin. Own only
+pages you create, record them before setup can fail, and detach their fields
+before awaiting `closeOwnedPage(page)` in shutdown. The helper handles absent
+or already-closed pages and propagates real close failures. The runner attempts
+shutdown after partial initialization and records cleanup errors alongside
+earlier errors. Dispose handles and cancel/remove only your own timers/listeners.
+Do not enumerate and close unrelated browser tabs. See the
+[resource ownership contract](../../ARCHITECTURE.md#resource-ownership-and-cleanup)
+for timeout behavior and browser ownership.
+
 ## Page Failure Handling
 
 `SiteScraper.run()` records page failures with the failing step (`fetch`, `extract`,

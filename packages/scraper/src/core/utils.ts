@@ -1,5 +1,6 @@
 import * as crypto from "crypto";
 import type { NormalizedItem } from "./types.js";
+import type { Page } from "puppeteer";
 import { scraperErrorMessage } from "./errors.js";
 
 /**
@@ -37,6 +38,11 @@ export function canonicalizeUrl(urlString: string, options: CanonicalizeUrlOptio
  */
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Caller must detach its page reference before awaiting cleanup. Failures propagate. */
+export async function closeOwnedPage(page?: Pick<Page, "isClosed" | "close">): Promise<void> {
+  if (page && !page.isClosed()) await page.close();
 }
 
 /**

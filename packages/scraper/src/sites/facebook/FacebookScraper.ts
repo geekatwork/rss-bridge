@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname } from "path";
 import type { ElementHandle, Page, Target } from "puppeteer";
 import { SiteScraper, type NormalizedItem, type ScraperContext, type SiteConfig } from "../../core/index.js";
-import { parseTimestamp, sleep, textToParagraphHtml } from "../../core/utils.js";
+import { closeOwnedPage, parseTimestamp, sleep, textToParagraphHtml } from "../../core/utils.js";
 import { fetchPostsViaApi } from "./graphApi.js";
 import {
   extractFirstImageUrl,
@@ -1175,7 +1175,7 @@ export class FacebookScraper extends SiteScraper {
     if (this.page) {
       const page = this.page;
       this.page = undefined;
-      if (!page.isClosed()) await page.close();
+      await closeOwnedPage(page);
     }
     context.logger.debug({ site: this.config.siteId }, "Facebook scraper shutdown");
   }

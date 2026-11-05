@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   canonicalizeUrl,
+  closeOwnedPage,
   cleanHtml,
   computeContentHash,
   escapeHtml,
@@ -14,6 +15,29 @@ import {
 import type { NormalizedItem } from "./types.js";
 
 describe("core/utils", () => {
+  it("closeOwnedPage tolerates absent and already-closed pages", async () => {
+    await expect(closeOwnedPage()).resolves.toBeUndefined();
+    const close = vi.fn();
+    await closeOwnedPage({ isClosed: () => true, close });
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("closeOwnedPage awaits closure and propagates the original failure", async () => {
+    let complete: () => void = () => {};
+    const close = vi.fn(() => new Promise<void>((resolve) => { complete = resolve; }));
+    let settled = false;
+    const pending = closeOwnedPage({ isClosed: () => false, close }).then(() => { settled = true; });
+    await Promise.resolve();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    complete();
+    await pending;
+    expect(settled).toBe(true);
+    const failure = new Error("Page close failed");
+    await expect(closeOwnedPage({
+      isClosed: () => false, close: vi.fn().mockRejectedValue(failure),
+    })).rejects.toBe(failure);
+  });
   it("retryWithBackoff retains unusual thrown causes without broken conversion", async () => {
     const cause = Object.create(null);
     const fn = vi.fn().mockRejectedValue(cause);
